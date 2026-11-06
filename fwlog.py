@@ -692,7 +692,9 @@ def api_logs_csv(p):
     w.writerow(cols)
     try:
         for r in c.execute(f"SELECT {LOG_COLS} FROM logs WHERE {where} ORDER BY id DESC LIMIT 100000", args):
-            r = list(r)
+            # i log sono dati non fidati: evita che Excel interpreti formule
+            r = [("'" + v) if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+                 for v in r]
             r[1] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[1] / 1000))
             w.writerow(r)
     finally:
@@ -726,6 +728,7 @@ def api_facets(p):
 class Web(BaseHTTPRequestHandler):
     server_version = "fwlog"
     protocol_version = "HTTP/1.1"
+    timeout = 60    # chiude connessioni inattive o lente
 
     def log_message(self, fmt, *a):
         pass
@@ -809,7 +812,13 @@ class Web(BaseHTTPRequestHandler):
         if not self.headers.get("Content-Type", "").startswith("application/json"):
             raise ValueError("Content-Type deve essere application/json")
         n = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(min(n, 65536)) or b"{}")
+        try:
+            d = json.loads(self.rfile.read(min(n, 65536)) or b"{}")
+        except ValueError:
+            raise ValueError("JSON non valido")
+        if not isinstance(d, dict):
+            raise ValueError("JSON non valido")
+        return d
 
     def _post(self):
         m = re.fullmatch(r"/api/firewalls/(\d+)", urlparse(self.path).path)
@@ -841,13 +850,21 @@ def _family(bind):
     return socket.AF_INET6 if ":" in bind else socket.AF_INET
 
 
-def udp_loop():
+def udp_socket():
+    """Creato nel thread principale: se il bind fallisce il servizio si ferma."""
     s = socket.socket(_family(SYSLOG_BIND), socket.SOCK_DGRAM)
     if _family(SYSLOG_BIND) == socket.AF_INET6:
         s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+    got = s.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+    if got < 16 * 1024 * 1024:
+        log.warning("buffer UDP limitato a %d KB: alzare net.core.rmem_max", got // 1024)
     s.bind((SYSLOG_BIND, SYSLOG_UDP))
     log.info("syslog UDP in ascolto su %s:%d", SYSLOG_BIND, SYSLOG_UDP)
+    return s
+
+
+def udp_loop(s):
     while True:
         try:
             data, addr = s.recvfrom(65535)
@@ -913,6 +930,10 @@ class WebServer(ThreadingHTTPServer):
     daemon_threads = True
     address_family = _family(WEB_BIND)
 
+    def handle_error(self, request, client_address):
+        # handshake TLS falliti, scanner, client che chiudono: niente traceback nel journal
+        log.debug("errore connessione web da %s", client_address[0], exc_info=True)
+
 
 # --------------------------------------------------------------------------
 def main():
@@ -922,7 +943,7 @@ def main():
     store = Store()
     store.start()
     if SYSLOG_UDP:
-        threading.Thread(target=udp_loop, name="udp", daemon=True).start()
+        threading.Thread(target=udp_loop, args=(udp_socket(),), name="udp", daemon=True).start()
     if SYSLOG_TCP:
         tcp = TCPServer((SYSLOG_BIND, SYSLOG_TCP), SyslogTCP)
         threading.Thread(target=tcp.serve_forever, name="tcp", daemon=True).start()
