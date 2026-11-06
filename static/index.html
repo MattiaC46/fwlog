@@ -57,11 +57,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .empty { margin: auto; text-align: center; color: var(--muted); padding: 40px 20px; max-width: 420px; }
 .empty h2 { color: var(--text); font-size: 18px; font-weight: 600; margin: 0 0 6px; }
 #view { display: flex; flex-direction: column; min-height: 0; flex: 1; }
-header.fw { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 4px 20px 10px; }
+header.fw { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 20px 10px; }
 
 /* ricerca firewall */
-.topbar { display: flex; justify-content: flex-end; padding: 10px 20px 0; }
-.search { position: relative; width: min(320px, 100%); }
+.search { position: relative; margin: 0 12px 8px; }
 .search input { width: 100%; border: 1px solid var(--border); background: var(--panel); border-radius: 6px;
   padding: 6px 10px 6px 30px; }
 .search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
@@ -155,8 +154,6 @@ dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .app { display: block; height: auto; }
   aside { border-right: 0; border-bottom: 1px solid var(--border); }
   #fwlist { max-height: 40vh; }
-  .topbar { padding: 10px 12px 0; }
-  .search { width: 100%; }
   main { min-height: 60vh; }
   .tablewrap { overflow-x: auto; overflow-y: visible; }
   header.fw, form.filters, .foot { padding-left: 12px; padding-right: 12px; }
@@ -169,21 +166,19 @@ dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 <div class="app">
   <aside>
     <div class="brand">fwlog<span>log dei firewall</span></div>
+    <div class="search">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/></svg>
+      <input id="search" type="search" placeholder="Cerca firewall per nome o IP" autocomplete="off" spellcheck="false"
+        role="combobox" aria-expanded="false" aria-controls="search-res" aria-autocomplete="list" aria-label="Cerca firewall">
+      <kbd>/</kbd>
+      <ul id="search-res" role="listbox" hidden></ul>
+    </div>
     <ul id="fwlist" aria-label="Firewall"></ul>
     <div class="side-msg" id="side-msg" hidden></div>
     <div class="side-foot" id="side-foot"></div>
   </aside>
 
   <main>
-    <div class="topbar">
-      <div class="search">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/></svg>
-        <input id="search" type="search" placeholder="Cerca firewall per nome o IP" autocomplete="off" spellcheck="false"
-          role="combobox" aria-expanded="false" aria-controls="search-res" aria-autocomplete="list" aria-label="Cerca firewall">
-        <kbd>/</kbd>
-        <ul id="search-res" role="listbox" hidden></ul>
-      </div>
-    </div>
     <div class="empty" id="empty">
       <h2>Scegli un firewall</h2>
       <div id="empty-text">Seleziona un firewall nella barra laterale per vederne i log.</div>
