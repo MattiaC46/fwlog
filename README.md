@@ -15,6 +15,9 @@ Dalla dashboard si sceglie un firewall e si filtrano i suoi log.
 
 Non è un SIEM: niente correlazione, alert o gestione utenti.
 
+> **Rocky Linux 9 / RHEL 9:** guida dedicata in [docs/INSTALL-ROCKY9.md](docs/INSTALL-ROCKY9.md)
+> (dnf, firewalld, SELinux, porta della dashboard personalizzata).
+
 ---
 
 ## Indice
@@ -97,6 +100,10 @@ git clone https://github.com/MattiaC46/fwlog.git
 cd fwlog
 sudo ./install.sh
 ```
+
+Per usare una porta diversa da 8443 per la dashboard: `sudo WEB_PORT=9443 ./install.sh`
+(vale alla prima installazione). Su Rocky Linux 9 segui
+[docs/INSTALL-ROCKY9.md](docs/INSTALL-ROCKY9.md).
 
 Il repository è privato: per clonarlo sulla VM serve un accesso GitHub (es. `gh auth login`
 oppure un token), in alternativa copia la cartella con `scp`.

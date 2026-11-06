@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Installazione (o aggiornamento) di fwlog su Ubuntu. Idempotente: si puo'
-# rieseguire per aggiornare il codice, non sovrascrive configurazione e certificati.
+# Installazione (o aggiornamento) di fwlog su Ubuntu/Debian o Rocky/RHEL 9.
+# Idempotente: si puo' rieseguire per aggiornare il codice, non sovrascrive
+# configurazione e certificati.
 #
-#   sudo ./install.sh            installazione normale
-#   sudo FORCE=1 ./install.sh    anche se /srv/fwlog non e' un disco separato
+#   sudo ./install.sh                 installazione normale
+#   sudo FORCE=1 ./install.sh         anche se /srv/fwlog non e' un disco separato
+#   sudo WEB_PORT=9443 ./install.sh   porta della dashboard (solo alla prima installazione)
 set -euo pipefail
 
 APP=/opt/fwlog
@@ -17,12 +19,22 @@ warn() { printf '\033[1;33mATTENZIONE:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERRORE:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "eseguire come root (sudo ./install.sh)"
+WEB_PORT=${WEB_PORT:-8443}
+case $WEB_PORT in ''|*[!0-9]*) die "WEB_PORT non valida: $WEB_PORT" ;; esac
+[ "$WEB_PORT" -ge 1 ] && [ "$WEB_PORT" -le 65535 ] && [ "$WEB_PORT" -ne 514 ] \
+    || die "WEB_PORT deve essere tra 1 e 65535 e diversa da 514"
 [ -f "$SRC/fwlog.py" ] && [ -f "$SRC/static/index.html" ] && [ -f "$SRC/fwlog.service" ] \
     || die "eseguire dalla cartella del repository (mancano fwlog.py, static/ o fwlog.service)"
 
 # 1. pacchetti
 info "Installo python3 e openssl"
-DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3 openssl >/dev/null
+if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3 openssl >/dev/null
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q python3 openssl >/dev/null
+else
+    die "gestore pacchetti non supportato (servono apt-get o dnf)"
+fi
 
 # 2. utente di sistema
 if ! id fwlog >/dev/null 2>&1; then
@@ -86,7 +98,7 @@ FWLOG_SYSLOG_BIND=0.0.0.0
 FWLOG_SYSLOG_UDP=514
 FWLOG_SYSLOG_TCP=514
 FWLOG_WEB_BIND=0.0.0.0
-FWLOG_WEB_PORT=8443
+FWLOG_WEB_PORT=$WEB_PORT
 FWLOG_WEB_USER=admin
 FWLOG_WEB_PASS=$NEW_PASS
 FWLOG_TLS_CERT=$ETC/tls.crt
@@ -102,6 +114,9 @@ EOF
     )
     chown root:fwlog "$ENV_FILE"
     chmod 0640 "$ENV_FILE"
+elif [ "$WEB_PORT" != "8443" ] && ! grep -q "^FWLOG_WEB_PORT=$WEB_PORT\$" "$ENV_FILE"; then
+    warn "$ENV_FILE esiste gia': WEB_PORT=$WEB_PORT ignorata. Per cambiare porta"
+    warn "modificare FWLOG_WEB_PORT nel file e poi: systemctl restart fwlog"
 fi
 
 # 7. buffer UDP del kernel
@@ -158,4 +173,11 @@ if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q "
     echo "    ufw allow 514/tcp"
     echo "    ufw allow ${PORT:-8443}/tcp"
     echo "    # esempio con restrizione: ufw allow from 192.168.1.0/24 to any port 514 proto udp"
+fi
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    echo
+    warn "firewalld e' attivo. Per aprire le porte (meglio limitare alle reti dei firewall):"
+    echo "    firewall-cmd --permanent --add-port=514/udp --add-port=514/tcp --add-port=${PORT:-8443}/tcp"
+    echo "    firewall-cmd --reload"
+    echo "    # restrizioni per rete: vedi docs/INSTALL-ROCKY9.md"
 fi
