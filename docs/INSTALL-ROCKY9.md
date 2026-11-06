@@ -3,7 +3,7 @@
 Guida passo passo per installare fwlog su una VM **Rocky Linux 9** in Proxmox, partendo
 da zero, con la dashboard su una **porta diversa dalla 8443**.
 
-Negli esempi la porta della dashboard è **9443**: sostituiscila con quella che preferisci
+Negli esempi la porta della dashboard è **10443**: sostituiscila con quella che preferisci
 (qualsiasi porta libera tra 1 e 65535, tranne 514).
 
 > La guida generale (configurazione dei firewall, filtri, variabili) resta il
@@ -19,7 +19,7 @@ Negli esempi la porta della dashboard è **9443**: sostituiscila con quella che 
 | Disco di sistema  | anche piccolo (15 GB), non riceve log    |
 | Disco dati        | secondo disco ext4 montato su `/srv/fwlog` |
 | Syslog            | UDP 514 e TCP 514                        |
-| Dashboard         | `https://<IP-VM>:9443/`                  |
+| Dashboard         | `https://<IP-VM>:10443/`                  |
 | Python            | `python3` di sistema (3.9), nessun pacchetto aggiuntivo |
 
 ---
@@ -81,7 +81,7 @@ ascolta in rete, ma meglio verificare) né la porta scelta per la dashboard:
 
 ```bash
 sudo ss -ulpn | grep ':514 '
-sudo ss -tlpn | grep -E ':(514|9443) '
+sudo ss -tlpn | grep -E ':(514|10443) '
 ```
 
 Non deve uscire nulla. Se rsyslog risultasse in ascolto su 514, commenta in
@@ -98,7 +98,7 @@ o una deploy key). In alternativa copia la cartella con `scp`.
 ```bash
 git clone https://github.com/MattiaC46/fwlog.git
 cd fwlog
-sudo WEB_PORT=9443 ./install.sh
+sudo WEB_PORT=10443 ./install.sh
 ```
 
 `WEB_PORT` va passata **dopo** `sudo` (sudo non conserva le variabili d'ambiente).
@@ -109,7 +109,7 @@ Lo script:
 - copia il programma in `/opt/fwlog`;
 - si ferma se `/srv/fwlog` non è un mount point;
 - genera certificato autofirmato e `/etc/fwlog/fwlog.env` con password casuale e
-  `FWLOG_WEB_PORT=9443`;
+  `FWLOG_WEB_PORT=10443`;
 - alza i buffer UDP del kernel;
 - installa e avvia il servizio `fwlog`.
 
@@ -127,7 +127,7 @@ Su Rocky firewalld è attivo di default e blocca tutto: le porte vanno aperte.
 **Semplice** (da qualsiasi rete):
 
 ```bash
-sudo firewall-cmd --permanent --add-port=514/udp --add-port=514/tcp --add-port=9443/tcp
+sudo firewall-cmd --permanent --add-port=514/udp --add-port=514/tcp --add-port=10443/tcp
 sudo firewall-cmd --reload
 ```
 
@@ -137,7 +137,7 @@ gestione. Esempio con firewall in `192.168.1.0/24` e amministratori in `10.0.0.0
 ```bash
 sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" port port="514" protocol="udp" accept'
 sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" port port="514" protocol="tcp" accept'
-sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/24" port port="9443" protocol="tcp" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.0.0.0/24" port port="10443" protocol="tcp" accept'
 sudo firewall-cmd --reload
 sudo firewall-cmd --list-all
 ```
@@ -169,7 +169,7 @@ sudo ausearch -m AVC -ts recent         # nessun rifiuto relativo a fwlog
 ```bash
 systemctl status fwlog
 sudo ss -ulpn | grep ':514 '            # python3 in ascolto UDP
-sudo ss -tlpn | grep -E ':(514|9443) '  # python3 in ascolto TCP
+sudo ss -tlpn | grep -E ':(514|10443) '  # python3 in ascolto TCP
 journalctl -u fwlog -n 30 --no-pager
 ```
 
@@ -180,7 +180,7 @@ python3 /opt/fwlog/test-sender.py 127.0.0.1
 python3 /opt/fwlog/test-sender.py 127.0.0.1 --tcp
 ```
 
-Poi apri `https://<IP-della-VM>:9443/`, accetta l'avviso del certificato autofirmato
+Poi apri `https://<IP-della-VM>:10443/`, accetta l'avviso del certificato autofirmato
 e accedi con `admin` e la password stampata. Deve comparire il firewall `127.0.0.1`
 con i log di esempio (si può eliminare dalla dashboard con **Elimina firewall**).
 
@@ -199,9 +199,9 @@ nel [README](../README.md).
 ## 9. Cambiare la porta in un secondo momento
 
 ```bash
-sudo sed -i 's/^FWLOG_WEB_PORT=.*/FWLOG_WEB_PORT=10443/' /etc/fwlog/fwlog.env
+sudo sed -i 's/^FWLOG_WEB_PORT=.*/FWLOG_WEB_PORT=11443/' /etc/fwlog/fwlog.env
 sudo systemctl restart fwlog
-sudo firewall-cmd --permanent --remove-port=9443/tcp --add-port=10443/tcp   # o aggiorna le rich rule
+sudo firewall-cmd --permanent --remove-port=10443/tcp --add-port=11443/tcp   # o aggiorna le rich rule
 sudo firewall-cmd --reload
 ```
 
@@ -232,7 +232,7 @@ df -h /srv/fwlog
 |---------|-------------------|
 | `install.sh` si ferma: `/srv/fwlog non e' un mount point` | Il disco dati non è montato: ripeti il § 2 (`findmnt /srv/fwlog`). |
 | Il servizio non parte dopo un riavvio | Disco dati non montato (`nofail` lascia partire il sistema ma fwlog no, apposta): `sudo mount -a`, poi `sudo systemctl start fwlog`. |
-| Dashboard irraggiungibile, `curl -k https://localhost:9443/` funziona | firewalld: controlla `sudo firewall-cmd --list-all` (§ 5). |
+| Dashboard irraggiungibile, `curl -k https://localhost:10443/` funziona | firewalld: controlla `sudo firewall-cmd --list-all` (§ 5). |
 | Nessun log dai firewall | `sudo tcpdump -ni any port 514` per vedere se arrivano; poi firewalld e `FWLOG_ALLOWED_SOURCES`. |
 | `Address already in use` nel journal | Un altro servizio usa 514 o la porta della dashboard (§ 3). |
 | Rifiuti SELinux in `ausearch` | Riapplica le etichette: `sudo restorecon -Rv /srv/fwlog /opt/fwlog /etc/fwlog`. |

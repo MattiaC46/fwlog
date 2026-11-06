@@ -5,7 +5,7 @@
 #
 #   sudo ./install.sh                 installazione normale
 #   sudo FORCE=1 ./install.sh         anche se /srv/fwlog non e' un disco separato
-#   sudo WEB_PORT=9443 ./install.sh   porta della dashboard (solo alla prima installazione)
+#   sudo WEB_PORT=10443 ./install.sh  porta della dashboard (solo alla prima installazione)
 set -euo pipefail
 
 APP=/opt/fwlog
