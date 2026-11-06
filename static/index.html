@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fwlog</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --text: #1c2230; --muted: #687080; --border: #e0e4ea;
+  --hover: #eef2f7; --sel: #e3ecfb; --accent: #2457c5; --accent-text: #ffffff;
+  --allow: #1f9d4c; --deny: #d33030; --warn: #c97a06; --idle: #a3aab5;
+  --allow-bg: #e3f5e9; --deny-bg: #fbe5e5; --neutral-bg: #eceff3;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Ubuntu, Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101317; --panel: #171b21; --text: #e3e7ed; --muted: #949dab; --border: #2a3039;
+    --hover: #1f252d; --sel: #1d2a40; --accent: #6b9cf5; --accent-text: #0d1117;
+    --allow: #3fbf6b; --deny: #f06a6a; --warn: #e9a83a; --idle: #5e6672;
+    --allow-bg: #173322; --deny-bg: #3a1c1e; --neutral-bg: #252b33;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans); }
+button, input { font: inherit; color: inherit; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+[hidden] { display: none !important; }
+
+.app { display: grid; grid-template-columns: 290px minmax(0, 1fr); height: 100vh; }
+
+/* barra laterale */
+aside { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+.brand { padding: 14px 16px 10px; font-weight: 650; font-size: 16px; letter-spacing: .2px; }
+.brand span { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+#fwlist { list-style: none; margin: 0; padding: 0 8px 8px; overflow-y: auto; flex: 1; min-height: 0; }
+#fwlist button { display: grid; grid-template-columns: 12px 1fr auto; gap: 2px 8px; align-items: center;
+  width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 8px; cursor: pointer; }
+#fwlist button:hover { background: var(--hover); }
+#fwlist button[aria-current="true"] { background: var(--sel); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); }
+.dot.ok { background: var(--allow); } .dot.warn { background: var(--warn); }
+.fw-name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fw-rate { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
+.fw-sub { grid-column: 2 / 4; display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
+.side-msg { padding: 8px 16px; color: var(--muted); font-size: 13px; }
+.side-foot { border-top: 1px solid var(--border); padding: 10px 16px; font-size: 12px; color: var(--muted); display: grid; gap: 2px; }
+.side-foot b { color: var(--text); font-weight: 550; }
+.side-foot .bad b { color: var(--warn); }
+
+/* area principale */
+main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.empty { margin: auto; text-align: center; color: var(--muted); padding: 40px 20px; max-width: 420px; }
+.empty h2 { color: var(--text); font-size: 18px; font-weight: 600; margin: 0 0 6px; }
+#view { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+header.fw { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 20px 10px; }
+header.fw h1 { font-size: 19px; margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+header.fw .info { color: var(--muted); font-size: 13px; }
+.actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; }
+.btn { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--deny); }
+.btn.danger-solid { background: var(--deny); border-color: var(--deny); color: #fff; }
+.btn[aria-pressed="true"] { border-color: var(--allow); color: var(--allow); }
+.live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--idle); margin-right: 6px; vertical-align: 1px; }
+.btn[aria-pressed="true"] .live-dot { background: var(--allow); animation: pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+
+form.filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 10px;
+  padding: 10px 20px 12px; border-bottom: 1px solid var(--border); }
+form.filters label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+form.filters input { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 5px 8px; min-width: 0; font-family: var(--mono); font-size: 12.5px; }
+form.filters input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+form.filters input.on { border-color: var(--accent); }
+form.filters label.wide { grid-column: span 2; }
+.f-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.f-actions .hint { font-size: 12px; color: var(--muted); }
+
+#err { margin: 10px 20px 0; padding: 8px 12px; border-radius: 6px; background: var(--deny-bg); color: var(--deny); }
+
+.tablewrap { flex: 1; min-height: 0; overflow: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 1080px; }
+thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); text-align: left; font-size: 12px; font-weight: 600;
+  color: var(--muted); padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tbody td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+tr.r { cursor: pointer; }
+tr.r:hover td { background: var(--hover); }
+tr.r td:first-child { border-left: 3px solid var(--idle); padding-left: 10px; }
+tr.r.a-allow td:first-child { border-left-color: var(--allow); }
+tr.r.a-deny td:first-child { border-left-color: var(--deny); }
+tr.r.new td { animation: flash 2s ease-out; }
+@keyframes flash { from { background: var(--sel); } }
+td.msg { max-width: 0; width: 40%; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.arrow { color: var(--muted); margin: 0 4px; }
+button.v { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: inherit; border-radius: 3px; }
+button.v:hover { color: var(--accent); text-decoration: underline; }
+.badge { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px; font-weight: 550; background: var(--neutral-bg); }
+.badge.allow { background: var(--allow-bg); color: var(--allow); }
+.badge.deny { background: var(--deny-bg); color: var(--deny); }
+button.v.badge:hover { text-decoration: none; filter: brightness(.95); }
+tr.detail td { background: var(--panel); padding: 10px 14px 14px 13px; border-left: 3px solid var(--border); white-space: normal; }
+.kv { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.kv b { color: var(--text); font-weight: 500; }
+pre.raw { margin: 0; white-space: pre-wrap; word-break: break-all; font-family: var(--mono); font-size: 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.foot { display: flex; align-items: center; gap: 12px; padding: 10px 20px 14px; color: var(--muted); font-size: 13px; }
+.none { padding: 30px 20px; text-align: center; color: var(--muted); }
+
+dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 18px 20px; width: min(440px, 92vw); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog h3 { margin: 0 0 10px; font-size: 16px; }
+dialog p { margin: 0 0 12px; }
+dialog input[type=text] { width: 100%; border: 1px solid var(--border); background: var(--bg); border-radius: 6px; padding: 6px 9px; }
+dialog .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+@media (max-width: 820px) {
+  .app { display: block; height: auto; }
+  aside { border-right: 0; border-bottom: 1px solid var(--border); }
+  #fwlist { max-height: 40vh; }
+  main { min-height: 60vh; }
+  .tablewrap { overflow-x: auto; overflow-y: visible; }
+  header.fw, form.filters, .foot { padding-left: 12px; padding-right: 12px; }
+  .actions { margin-left: 0; }
+  form.filters label.wide { grid-column: auto; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand">fwlog<span>log dei firewall</span></div>
+    <ul id="fwlist" aria-label="Firewall"></ul>
+    <div class="side-msg" id="side-msg" hidden></div>
+    <div class="side-foot" id="side-foot"></div>
+  </aside>
+
+  <main>
+    <div class="empty" id="empty">
+      <h2>Scegli un firewall</h2>
+      <div id="empty-text">Seleziona un firewall nella barra laterale per vederne i log.</div>
+    </div>
+
+    <div id="view" hidden>
+      <header class="fw">
+        <div>
+          <h1 id="fw-name"></h1>
+          <div class="info"><span class="mono" id="fw-ip"></span> · <span id="fw-info"></span></div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="b-live" type="button" aria-pressed="false"><span class="live-dot"></span>Live</button>
+          <button class="btn" id="b-csv" type="button" title="Esporta i log filtrati (massimo 100.000 righe)">Esporta CSV</button>
+          <button class="btn" id="b-rename" type="button">Rinomina</button>
+          <button class="btn danger" id="b-delete" type="button">Elimina</button>
+        </div>
+      </header>
+
+      <form class="filters" id="filters" autocomplete="off">
+        <label>IP <input name="ip" placeholder="sorgente o destinazione"></label>
+        <label>Sorgente <input name="src" placeholder="10.0.0.0/8"></label>
+        <label>Destinazione <input name="dst"></label>
+        <label>Porta <input name="port" inputmode="numeric" placeholder="src o dst"></label>
+        <label>Porta dst <input name="dport" inputmode="numeric"></label>
+        <label>Interfaccia <input name="iface" list="dl-iface"></label>
+        <label>Zona <input name="zone" list="dl-zone"></label>
+        <label>Azione <input name="action" list="dl-action"></label>
+        <label>Protocollo <input name="proto" list="dl-proto"></label>
+        <label>Regola <input name="rule"></label>
+        <label class="wide">Testo <input name="q" placeholder="cerca nel messaggio"></label>
+        <label>Da <input name="from" type="datetime-local" step="1"></label>
+        <label>A <input name="to" type="datetime-local" step="1"></label>
+        <div class="f-actions">
+          <button class="btn primary" type="submit">Applica filtri</button>
+          <button class="btn" type="button" id="b-reset">Azzera</button>
+          <span class="hint">CIDR ammesso, ! per escludere. Clic su un valore in tabella per filtrarlo, Alt+clic per escluderlo.</span>
+        </div>
+        <datalist id="dl-iface"></datalist><datalist id="dl-zone"></datalist>
+        <datalist id="dl-action"></datalist><datalist id="dl-proto"></datalist>
+      </form>
+
+      <div id="err" role="alert" hidden></div>
+
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th>Ora</th><th>Azione</th><th>Proto</th><th>Sorgente</th><th>Destinazione</th>
+            <th>Interfacce</th><th>Zone</th><th>Regola</th><th>Messaggio</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="none" id="none" hidden>Nessun log corrisponde ai filtri.</div>
+        <div class="foot">
+          <span id="count"></span>
+          <button class="btn" id="b-more" type="button" hidden>Carica altri</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<dialog id="dlg-rename">
+  <form method="dialog">
+    <h3>Rinomina firewall</h3>
+    <input type="text" name="name" maxlength="80" required>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate>Annulla</button>
+      <button class="btn primary" value="ok">Salva</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-delete">
+  <form method="dialog">
+    <h3>Eliminare il firewall?</h3>
+    <p id="del-text"></p>
+    <p class="muted">Se il firewall continua a inviare log ricomparirà nell'elenco, vuoto.</p>
+    <div class="row">
+      <button class="btn" value="cancel">Annulla</button>
+      <button class="btn danger-solid" value="ok">Elimina firewall e log</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+// I log arrivano dalla rete: ogni valore va nel DOM solo tramite textContent / attributi.
+
+const LIMIT = 200, LIVE_MS = 4000, LIVE_MAX = 2000, SIDEBAR_MS = 10000;
+const SEV = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
+const $ = (s) => document.querySelector(s);
+const nf = new Intl.NumberFormat("it-IT");
+const nf1 = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 1 });
+
+const st = {
+  fws: [], loaded: false, now: Date.now(), stats: null,
+  sel: null, rows: [], more: false, filters: {},
+  live: false, polling: false, seq: 0, hidden: new Set(),
+};
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = String(text);
+  return e;
+}
+
+async function api(path, opt) {
+  const r = await fetch(path, Object.assign({ cache: "no-store", credentials: "same-origin" }, opt));
+  let d = null;
+  try { d = await r.json(); } catch (_) { /* risposta non JSON */ }
+  if (!r.ok) throw new Error((d && d.error) || "Errore HTTP " + r.status);
+  return d;
+}
+
+const pad = (n) => String(n).padStart(2, "0");
+function fmtTime(ts) {
+  const d = new Date(ts), t = new Date();
+  const hms = pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  if (d.toDateString() === t.toDateString()) return hms;
+  return pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + " " + hms;
+}
+function fmtFull(ts) {
+  const d = new Date(ts);
+  return d.toLocaleDateString("it-IT") + " " + d.toLocaleTimeString("it-IT") + "." + String(d.getMilliseconds()).padStart(3, "0");
+}
+function fmtAgo(ms) {
+  if (ms == null) return "mai";
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return "adesso";
+  if (s < 3600) return Math.floor(s / 60) + " min fa";
+  if (s < 86400) return Math.floor(s / 3600) + " h fa";
+  return Math.floor(s / 86400) + " g fa";
+}
+function fmtBytes(b) {
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return nf1.format(b) + " " + u[i];
+}
+
+/* ---------------- barra laterale ---------------- */
+
+async function loadFirewalls() {
+  try {
+    const d = await api("/api/firewalls");
+    for (const id of [...st.hidden]) if (!d.firewalls.some((f) => f.id === id)) st.hidden.delete(id);
+    st.fws = d.firewalls.filter((f) => !st.hidden.has(f.id));
+    st.now = d.now; st.stats = d.stats; st.loaded = true;
+    $("#side-msg").hidden = true;
+  } catch (e) {
+    $("#side-msg").textContent = "Server non raggiungibile: " + e.message;
+    $("#side-msg").hidden = false;
+  }
+  renderSidebar();
+  renderMain();
+}
+
+function selectedFw() { return st.fws.find((f) => f.id === st.sel) || null; }
+
+function renderSidebar() {
+  const ul = $("#fwlist");
+  ul.replaceChildren();
+  for (const f of st.fws) {
+    const age = f.last_seen == null ? null : st.now - f.last_seen;
+    const li = el("li"), b = el("button");
+    b.type = "button";
+    b.setAttribute("aria-current", f.id === st.sel ? "true" : "false");
+    const dot = el("span", "dot" + (age != null && age < 120e3 ? " ok" : age != null && age < 900e3 ? " warn" : ""));
+    dot.title = age != null && age < 120e3 ? "Attivo" : age != null && age < 900e3 ? "Inattivo da qualche minuto" : "Inattivo";
+    const sub = el("span", "fw-sub");
+    sub.append(el("span", "mono", f.ip), el("span", null, fmtAgo(age)));
+    b.append(dot, el("span", "fw-name", f.name), el("span", "fw-rate", nf.format(f.rate) + "/min"), sub);
+    b.title = f.name + " (" + f.ip + ")";
+    b.addEventListener("click", () => { location.hash = "fw-" + f.id; });
+    li.append(b);
+    ul.append(li);
+  }
+  if (st.loaded && !st.fws.length && $("#side-msg").hidden) {
+    $("#side-msg").textContent = "Nessun firewall ancora. Configura i firewall per inviare syslog a questo server sulla porta 514 (UDP o TCP).";
+    $("#side-msg").hidden = false;
+  }
+  const foot = $("#side-foot");
+  foot.replaceChildren();
+  const s = st.stats;
+  if (s) {
+    const line = (label, value, bad) => {
+      const d = el("div", bad ? "bad" : null, label + " ");
+      d.append(el("b", null, value));
+      foot.append(d);
+    };
+    line("Spazio libero", fmtBytes(s.disk_free) + " di " + fmtBytes(s.disk_total), s.disk_free < 5 * 1024 ** 3);
+    line("Database", fmtBytes(s.db_size) + " · conservazione " + (s.retention_days ? s.retention_days + " giorni" : "illimitata"));
+    line("Messaggi scartati", nf.format(s.dropped), s.dropped > 0);
+    if (s.rejected) line("Da sorgenti non ammesse", nf.format(s.rejected), true);
+  }
+}
+
+/* ---------------- area principale ---------------- */
+
+function renderMain() {
+  const f = selectedFw();
+  const show = st.sel != null && (f || !st.loaded);
+  $("#view").hidden = !show;
+  $("#empty").hidden = show;
+  if (st.sel != null && st.loaded && !f) {
+    $("#empty-text").textContent = "Il firewall selezionato non esiste più. Scegline un altro dalla barra laterale.";
+  } else {
+    $("#empty-text").textContent = "Seleziona un firewall nella barra laterale per vederne i log.";
+  }
+  if (!f) return;
+  $("#fw-name").textContent = f.name;
+  $("#fw-ip").textContent = f.ip;
+  $("#fw-info").textContent = nf.format(f.total) + " log · ultimo " + fmtAgo(f.last_seen == null ? null : st.now - f.last_seen);
+  document.title = f.name + " · fwlog";
+}
+
+function onHash() {
+  const m = /^#fw-(\d+)$/.exec(location.hash);
+  const id = m ? Number(m[1]) : null;
+  if (id === st.sel) return;
+  st.sel = id;
+  clearFilters();
+  st.rows = []; st.more = false;
+  $("#rows").replaceChildren();
+  $("#count").textContent = "";
+  $("#b-more").hidden = true;
+  $("#none").hidden = true;
+  showError(null);
+  if (id == null) document.title = "fwlog";
+  renderSidebar();
+  renderMain();
+  if (id != null) { loadFacets(); loadRows(); }
+}
+
+function showError(msg) {
+  $("#err").textContent = msg || "";
+  $("#err").hidden = !msg;
+}
+
+/* ---------------- filtri ---------------- */
+
+const form = $("#filters");
+
+function readFilters() {
+  const f = {};
+  for (const inp of form.querySelectorAll("input[name]")) {
+    const v = inp.value.trim();
+    inp.classList.toggle("on", !!v);
+    if (!v) continue;
+    if (inp.type === "datetime-local") {
+      const t = new Date(v).getTime();
+      if (!isNaN(t)) f[inp.name] = String(inp.name === "to" && !/:\d\d:\d\d$/.test(v) ? t + 59999 : t);
+    } else {
+      f[inp.name] = v;
+    }
+  }
+  return f;
+}
+
+function clearFilters() {
+  form.reset();
+  for (const inp of form.querySelectorAll("input")) inp.classList.remove("on");
+  st.filters = {};
+}
+
+function setFilter(name, value, exclude) {
+  const inp = form.elements[name];
+  if (!inp) return;
+  inp.value = (exclude ? "!" : "") + value;
+  applyFilters();
+}
+
+function applyFilters() {
+  st.filters = readFilters();
+  loadRows();
+}
+
+form.addEventListener("submit", (e) => { e.preventDefault(); applyFilters(); });
+$("#b-reset").addEventListener("click", () => { clearFilters(); loadRows(); });
+
+function query(extra) {
+  const p = new URLSearchParams();
+  p.set("fw", st.sel);
+  for (const [k, v] of Object.entries(st.filters)) p.set(k, v);
+  for (const [k, v] of Object.entries(extra || {})) p.set(k, v);
+  return p.toString();
+}
+
+async function loadFacets() {
+  const id = st.sel;
+  try {
+    const d = await api("/api/facets?fw=" + id);
+    if (id !== st.sel) return;
+    for (const k of ["iface", "zone", "action", "proto"]) {
+      const dl = $("#dl-" + k);
+      dl.replaceChildren(...(d[k] || []).map((v) => { const o = document.createElement("option"); o.value = v; return o; }));
+    }
+  } catch (_) { /* i suggerimenti sono facoltativi */ }
+}
+
+/* ---------------- tabella ---------------- */
+
+function vbtn(field, value, text, cls) {
+  const b = el("button", "v" + (cls ? " " + cls : ""), text == null ? value : text);
+  b.type = "button";
+  b.dataset.f = field;
+  b.dataset.v = value;
+  b.title = "Clic: filtra · Alt+clic: escludi";
+  return b;
+}
+
+function endpoint(td, ipField, ip, port, portField) {
+  td.className = "mono";
+  if (!ip) { td.textContent = "—"; td.classList.add("muted"); return; }
+  const v6 = ip.includes(":");
+  if (v6 && port != null) td.append("[");
+  td.append(vbtn(ipField, ip));
+  if (port != null) {
+    td.append(v6 ? "]:" : ":");
+    td.append(portField ? vbtn(portField, String(port)) : String(port));
+  }
+}
+
+function pair(td, field, a, b) {
+  if (!a && !b) { td.textContent = "—"; td.className = "muted"; return; }
+  td.append(a ? vbtn(field, a) : el("span", "muted", "—"));
+  if (b) { td.append(el("span", "arrow", "→"), vbtn(field, b)); }
+}
+
+function rowEl(r) {
+  const tr = el("tr", "r " + (r.action === "allow" ? "a-allow" : r.action === "deny" ? "a-deny" : ""));
+  tr._log = r;
+  const td = () => tr.appendChild(el("td"));
+
+  const t = td(); t.className = "mono"; t.textContent = fmtTime(r.ts); t.title = fmtFull(r.ts);
+  const a = td();
+  if (r.action) a.append(vbtn("action", r.action, null, "badge " + (r.action === "allow" || r.action === "deny" ? r.action : "")));
+  const p = td(); p.className = "mono";
+  if (r.proto) p.append(vbtn("proto", r.proto));
+  endpoint(td(), "src", r.src, r.sport, null);
+  endpoint(td(), "dst", r.dst, r.dport, "dport");
+  const ifs = td(); ifs.className = "mono"; pair(ifs, "iface", r.in_if, r.out_if);
+  pair(td(), "zone", r.src_zone, r.dst_zone);
+  const rule = td(); rule.className = "mono";
+  if (r.rule) rule.append(vbtn("rule", r.rule, r.rule.length > 24 ? r.rule.slice(0, 22) + "…" : r.rule));
+  const msg = td(); msg.className = "msg"; msg.textContent = (r.raw || "").slice(0, 400);
+  return tr;
+}
+
+function detailEl(r) {
+  const tr = el("tr", "detail"), td = el("td");
+  td.colSpan = 9;
+  const kv = el("div", "kv");
+  const item = (k, v) => { const s = el("span", null, k + " "); s.append(el("b", null, v == null ? "—" : v)); kv.append(s); };
+  item("Ricevuto", fmtFull(r.ts));
+  item("Host", r.host);
+  item("Programma", r.prog);
+  item("Severità", r.sev == null ? null : r.sev + " " + SEV[r.sev]);
+  item("ID", r.id);
+  td.append(kv, el("pre", "raw", r.raw || ""));
+  tr.append(td);
+  return tr;
+}
+
+$("#rows").addEventListener("click", (e) => {
+  const b = e.target.closest("button.v");
+  if (b) { e.stopPropagation(); setFilter(b.dataset.f, b.dataset.v, e.altKey); return; }
+  const tr = e.target.closest("tr.r");
+  if (!tr || String(window.getSelection())) return;   // non chiudere mentre si seleziona testo
+  if (tr._det) { tr._det.remove(); tr._det = null; }
+  else { tr._det = detailEl(tr._log); tr.after(tr._det); }
+});
+
+function updateFoot() {
+  const n = st.rows.length;
+  $("#none").hidden = n > 0;
+  const nflt = Object.keys(st.filters).length;
+  $("#count").textContent = n ? nf.format(n) + (n === 1 ? " riga" : " righe") + (nflt ? " · " + nflt + (nflt === 1 ? " filtro attivo" : " filtri attivi") : "") : "";
+  $("#b-more").hidden = !st.more;
+}
+
+function appendRows(rows) {
+  const frag = document.createDocumentFragment();
+  for (const r of rows) frag.append(rowEl(r));
+  $("#rows").append(frag);
+}
+
+async function loadRows() {
+  if (st.sel == null) return;
+  const seq = ++st.seq;
+  $("#count").textContent = "Caricamento…";
+  try {
+    const d = await api("/api/logs?" + query({ limit: LIMIT }));
+    if (seq !== st.seq) return;
+    showError(null);
+    st.rows = d.rows; st.more = d.more;
+    $("#rows").replaceChildren();
+    appendRows(d.rows);
+    $(".tablewrap").scrollTop = 0;
+  } catch (e) {
+    if (seq !== st.seq) return;
+    showError(e.message);
+    st.rows = []; st.more = false;
+    $("#rows").replaceChildren();
+  }
+  updateFoot();
+}
+
+$("#b-more").addEventListener("click", async () => {
+  const last = st.rows[st.rows.length - 1];
+  if (!last) return;
+  const seq = st.seq, btn = $("#b-more");
+  btn.disabled = true;
+  try {
+    const d = await api("/api/logs?" + query({ limit: LIMIT, before: last.id }));
+    if (seq !== st.seq) return;
+    st.rows = st.rows.concat(d.rows); st.more = d.more;
+    appendRows(d.rows);
+  } catch (e) { showError(e.message); }
+  finally { btn.disabled = false; updateFoot(); }
+});
+
+/* ---------------- live ---------------- */
+
+async function poll() {
+  if (!st.live || st.sel == null || document.hidden || st.polling) return;
+  st.polling = true;
+  try { await pollOnce(); } finally { st.polling = false; }
+}
+
+async function pollOnce() {
+  const seq = st.seq;
+  const top = st.rows[0];
+  try {
+    const d = await api("/api/logs?" + query({ limit: 1000, after: top ? top.id : 0 }));
+    if (seq !== st.seq || !st.live) return;
+    if (d.more) { loadRows(); return; }       // troppi nuovi: ricarica da capo
+    if (!d.rows.length) return;
+    const tbody = $("#rows"), frag = document.createDocumentFragment();
+    for (const r of d.rows) { const tr = rowEl(r); tr.classList.add("new"); frag.append(tr); }
+    tbody.prepend(frag);
+    st.rows = d.rows.concat(st.rows);
+    if (st.rows.length > LIVE_MAX) {
+      st.rows.length = LIVE_MAX;
+      st.more = true;
+      const trs = tbody.querySelectorAll("tr.r");
+      for (let i = LIVE_MAX; i < trs.length; i++) { if (trs[i]._det) trs[i]._det.remove(); trs[i].remove(); }
+    }
+    showError(null);
+    updateFoot();
+  } catch (e) { showError("Live: " + e.message); }
+}
+
+$("#b-live").addEventListener("click", () => {
+  st.live = !st.live;
+  $("#b-live").setAttribute("aria-pressed", String(st.live));
+  if (st.live) poll();
+});
+
+/* ---------------- azioni sul firewall ---------------- */
+
+$("#b-csv").addEventListener("click", () => {
+  if (st.sel == null) return;
+  location.href = "/api/logs.csv?" + query();
+});
+
+const dlgRename = $("#dlg-rename");
+$("#b-rename").addEventListener("click", () => {
+  const f = selectedFw();
+  if (!f) return;
+  dlgRename.querySelector("input").value = f.name;
+  dlgRename.returnValue = "";
+  dlgRename.showModal();
+  dlgRename.querySelector("input").select();
+});
+dlgRename.addEventListener("close", async () => {
+  if (dlgRename.returnValue !== "ok") return;
+  const name = dlgRename.querySelector("input").value.trim();
+  if (!name || st.sel == null) return;
+  try {
+    await api("/api/firewalls/" + st.sel, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    });
+    await loadFirewalls();
+  } catch (e) { showError(e.message); }
+});
+
+const dlgDelete = $("#dlg-delete");
+$("#b-delete").addEventListener("click", () => {
+  const f = selectedFw();
+  if (!f) return;
+  $("#del-text").textContent = "Verranno eliminati «" + f.name + "» (" + f.ip + ") e tutti i suoi " +
+    nf.format(f.total) + " log. L'operazione non si può annullare.";
+  dlgDelete.returnValue = "";
+  dlgDelete.showModal();
+});
+dlgDelete.addEventListener("close", async () => {
+  if (dlgDelete.returnValue !== "ok" || st.sel == null) return;
+  const id = st.sel;
+  try {
+    await api("/api/firewalls/" + id, { method: "DELETE" });
+    st.hidden.add(id);
+    st.fws = st.fws.filter((f) => f.id !== id);
+    st.live = false;
+    $("#b-live").setAttribute("aria-pressed", "false");
+    location.hash = "";
+  } catch (e) { showError(e.message); }
+});
+
+/* ---------------- avvio ---------------- */
+
+window.addEventListener("hashchange", onHash);
+onHash();
+loadFirewalls();
+setInterval(loadFirewalls, SIDEBAR_MS);
+setInterval(poll, LIVE_MS);
+</script>
+</body>
+</html>
