@@ -58,6 +58,8 @@ STATIC_DIR = E("FWLOG_STATIC_DIR",
 QUEUE_MAX = int(E("FWLOG_QUEUE_MAX", "200000"))
 MAX_RAW = 8192
 BATCH = 5000
+DEL_BLOCK = 20000
+MAX_RETENTION = 36500
 
 log = logging.getLogger("fwlog")
 
@@ -379,7 +381,8 @@ def parse_fields(body):
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS firewalls(
     id INTEGER PRIMARY KEY, ip TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
-    first_seen INTEGER, last_seen INTEGER, total INTEGER NOT NULL DEFAULT 0);
+    first_seen INTEGER, last_seen INTEGER, total INTEGER NOT NULL DEFAULT 0,
+    retention_days INTEGER);
 CREATE TABLE IF NOT EXISTS logs(
     id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, fw_id INTEGER NOT NULL,
     sev INTEGER, host TEXT, prog TEXT, action TEXT, proto TEXT,
@@ -404,12 +407,21 @@ class Store:
         self._rates = deque()
         self._lock = threading.Lock()
         self.fw_cache = {}
+        self.deleting = {}     # fw_id -> eliminazioni di log in corso
         new = not os.path.exists(DB_PATH)
         c = self.connect()
         if new:
             c.execute("PRAGMA auto_vacuum=INCREMENTAL")
         c.execute("PRAGMA journal_mode=WAL")
         c.executescript(SCHEMA)
+        cols = [r["name"] for r in c.execute("PRAGMA table_info(firewalls)")]
+        if "retention_days" not in cols:
+            # DB creato da una versione precedente: aggiunge la colonna e riallinea
+            # i contatori, che ora indicano i log conservati
+            log.info("aggiornamento del database: conservazione per firewall")
+            c.execute("ALTER TABLE firewalls ADD COLUMN retention_days INTEGER")
+            c.execute("UPDATE firewalls SET total = (SELECT count(*) FROM logs "
+                      "WHERE logs.fw_id = firewalls.id)")
         c.commit()
         c.close()
         self.thread = threading.Thread(target=self._run, name="writer", daemon=True)
@@ -448,6 +460,19 @@ class Store:
 
     def command(self, name, arg):
         self.q.put(("cmd", name, arg))
+
+    def delete_logs(self, fid, where, args, max_id):
+        with self._lock:
+            self.deleting[fid] = self.deleting.get(fid, 0) + 1
+        self.command("delete_logs", (fid, where, args, max_id))
+
+    def _done_deleting(self, fid):
+        with self._lock:
+            n = self.deleting.get(fid, 0) - 1
+            if n > 0:
+                self.deleting[fid] = n
+            else:
+                self.deleting.pop(fid, None)
 
     def start(self):
         self.thread.start()
@@ -545,6 +570,21 @@ class Store:
         with self._lock:
             self._rates.append((time.time(), count))
 
+    def _delete_where(self, conn, fid, where, args, limit):
+        """Elimina al massimo `limit` log del firewall che soddisfano `where`
+        (a blocchi, aggiornando il contatore). Restituisce quanti ne ha eliminati."""
+        done = 0
+        while done < limit:
+            n = conn.execute(f"DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE {where} "
+                             "ORDER BY id LIMIT ?)", args + [min(DEL_BLOCK, limit - done)]).rowcount
+            if n:
+                conn.execute("UPDATE firewalls SET total=max(0, total-?) WHERE id=?", (n, fid))
+            conn.commit()
+            done += n
+            if n < DEL_BLOCK:
+                break
+        return done
+
     def _command(self, conn, name, arg):
         try:
             if name == "delete_fw":
@@ -556,28 +596,62 @@ class Store:
                 self.fw_cache = {k: v for k, v in self.fw_cache.items() if v != arg}
                 conn.execute("PRAGMA incremental_vacuum").fetchall()
                 log.info("firewall %s eliminato con i suoi log", arg)
+            elif name == "delete_logs":
+                fid, where, args, max_id = arg
+                limit = DEL_BLOCK * 5
+                n = self._delete_where(conn, fid, f"{where} AND id <= ?", args + [max_id], limit)
+                if n >= limit:
+                    # ancora da eliminare: rimette il comando in coda per non
+                    # bloccare a lungo la scrittura dei nuovi log
+                    try:
+                        self.q.put_nowait(("cmd", name, arg))
+                        return
+                    except queue.Full:
+                        while self._delete_where(conn, fid, f"{where} AND id <= ?",
+                                                 args + [max_id], limit) >= limit:
+                            pass
+                conn.execute("PRAGMA incremental_vacuum").fetchall()
+                self._done_deleting(fid)
+                log.info("eliminazione log del firewall %s completata", fid)
         except Exception:
             log.exception("comando %s fallito", name)
             conn.rollback()
+            if name == "delete_logs":
+                self._done_deleting(arg[0])
+
+    def _drop_oldest(self, conn, n):
+        """Elimina gli n log piu' vecchi di tutti i firewall."""
+        hi = conn.execute("SELECT max(id) FROM (SELECT id FROM logs ORDER BY id LIMIT ?)", (n,)).fetchone()[0]
+        if hi is None:
+            return 0
+        counts = conn.execute("SELECT fw_id, count(*) FROM logs NOT INDEXED WHERE id <= ? "
+                              "GROUP BY fw_id", (hi,)).fetchall()
+        deleted = conn.execute("DELETE FROM logs WHERE id <= ?", (hi,)).rowcount
+        conn.executemany("UPDATE firewalls SET total=max(0, total-?) WHERE id=?",
+                         [(c, f) for f, c in counts])
+        conn.commit()
+        return deleted
 
     def _maintenance(self, conn):
         deleted = 0
-        if RETENTION_DAYS > 0:
-            cutoff = int((time.time() - RETENTION_DAYS * 86400) * 1000)
-            for _ in range(10):
-                n = conn.execute("DELETE FROM logs WHERE id IN (SELECT id FROM logs "
-                                 "WHERE ts < ? ORDER BY id LIMIT 20000)", (cutoff,)).rowcount
-                conn.commit()
-                deleted += n
-                if n < 20000:
-                    break
+        # Conservazione: per firewall, retention_days NULL = predefinita, 0 = illimitata
+        now = time.time()
+        for fid, days in conn.execute("SELECT id, retention_days FROM firewalls").fetchall():
+            days = RETENTION_DAYS if days is None else days
+            if days <= 0:
+                continue
+            cutoff = int((now - days * 86400) * 1000)
+            # id cresce con ts: trova l'ultimo id da eliminare e usa l'indice su fw_id
+            row = conn.execute("SELECT id FROM logs WHERE ts < ? ORDER BY ts DESC LIMIT 1",
+                               (cutoff,)).fetchone()
+            if row:
+                deleted += self._delete_where(conn, fid, "fw_id = ? AND id <= ?",
+                                              [fid, row[0]], DEL_BLOCK * 10)
         # Protezione disco pieno: elimina i log piu' vecchi finche' non c'e' spazio
         for _ in range(20):
             if shutil.disk_usage(DATA_DIR).free >= MIN_FREE_GB * 1024 ** 3:
                 break
-            n = conn.execute("DELETE FROM logs WHERE id IN "
-                             "(SELECT id FROM logs ORDER BY id LIMIT 50000)").rowcount
-            conn.commit()
+            n = self._drop_oldest(conn, 50000)
             conn.execute("PRAGMA incremental_vacuum").fetchall()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
             deleted += n
@@ -654,7 +728,7 @@ def build_where(p):
 def api_firewalls():
     c = store.connect(readonly=True)
     try:
-        rows = c.execute("SELECT id, ip, name, first_seen, last_seen, total FROM firewalls "
+        rows = c.execute("SELECT id, ip, name, first_seen, last_seen, total, retention_days FROM firewalls "
                          "ORDER BY name COLLATE NOCASE").fetchall()
     finally:
         c.close()
@@ -663,7 +737,8 @@ def api_firewalls():
     db_size = sum(os.path.getsize(DB_PATH + s) for s in ("", "-wal") if os.path.exists(DB_PATH + s))
     return {
         "now": int(time.time() * 1000),
-        "firewalls": [dict(r, rate=rates.get(r["id"], 0)) for r in rows],
+        "firewalls": [dict(r, rate=rates.get(r["id"], 0), deleting=r["id"] in store.deleting)
+                      for r in rows],
         "stats": {"received": store.received, "dropped": store.dropped,
                   "rejected": store.rejected, "queue": store.q.qsize(),
                   "disk_free": du.free, "disk_total": du.total, "db_size": db_size,
@@ -681,6 +756,31 @@ def api_logs(p):
     finally:
         c.close()
     return {"rows": [dict(r) for r in rows], "more": len(rows) == limit}
+
+
+def api_logs_count(p):
+    where, args = build_where(p)
+    c = store.connect(readonly=True)
+    try:
+        return {"count": c.execute(f"SELECT count(*) FROM logs WHERE {where}", args).fetchone()[0]}
+    finally:
+        c.close()
+
+
+def api_logs_delete(p):
+    p = {k: v for k, v in p.items() if k not in ("before", "after", "limit")}
+    where, args = build_where(p)
+    fid = _int(p["fw"], "fw")
+    c = store.connect(readonly=True)
+    try:
+        if not c.execute("SELECT 1 FROM firewalls WHERE id=?", (fid,)).fetchone():
+            raise ValueError("firewall non trovato")
+        max_id = c.execute("SELECT max(id) FROM logs").fetchone()[0] or 0
+    finally:
+        c.close()
+    # max_id: i log ricevuti dopo la richiesta non vengono toccati
+    store.delete_logs(fid, where, args, max_id)
+    return {"ok": True}
 
 
 def api_logs_csv(p):
@@ -803,6 +903,8 @@ class Web(BaseHTTPRequestHandler):
             name = time.strftime("fwlog-%Y%m%d-%H%M%S.csv")
             self._send(200, api_logs_csv(p), "text/csv; charset=utf-8",
                        {"Content-Disposition": f'attachment; filename="{name}"'})
+        elif u.path == "/api/logs/count":
+            self._send(200, api_logs_count(p))
         elif u.path == "/api/facets":
             self._send(200, api_facets(p))
         else:
@@ -824,19 +926,42 @@ class Web(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/firewalls/(\d+)", urlparse(self.path).path)
         if not m:
             return self._send(404, {"error": "non trovato"})
-        name = str(self._body_json().get("name", "")).strip()[:80]
-        if not name:
-            raise ValueError("il nome non puo' essere vuoto")
+        d = self._body_json()
+        sets, args = [], []
+        if "name" in d:
+            name = str(d["name"] or "").strip()[:80]
+            if not name:
+                raise ValueError("il nome non puo' essere vuoto")
+            sets.append("name=?"); args.append(name)
+        if "retention_days" in d:
+            r = d["retention_days"]
+            if r is not None and r != "":
+                if isinstance(r, bool) or not isinstance(r, (int, str)):
+                    raise ValueError("conservazione non valida")
+                r = _int(r, "conservazione")
+                if not 0 <= r <= MAX_RETENTION:
+                    raise ValueError(f"la conservazione deve essere tra 0 e {MAX_RETENTION} giorni")
+            else:
+                r = None
+            sets.append("retention_days=?"); args.append(r)
+        if not sets:
+            raise ValueError("niente da modificare")
         c = store.connect()
         try:
-            c.execute("UPDATE firewalls SET name=? WHERE id=?", (name, int(m.group(1))))
+            n = c.execute(f"UPDATE firewalls SET {', '.join(sets)} WHERE id=?",
+                          args + [int(m.group(1))]).rowcount
             c.commit()
         finally:
             c.close()
+        if not n:
+            return self._send(404, {"error": "firewall non trovato"})
         self._send(200, {"ok": True})
 
     def _delete(self):
-        m = re.fullmatch(r"/api/firewalls/(\d+)", urlparse(self.path).path)
+        u = urlparse(self.path)
+        if u.path == "/api/logs":
+            return self._send(202, api_logs_delete({k: v[-1] for k, v in parse_qs(u.query).items()}))
+        m = re.fullmatch(r"/api/firewalls/(\d+)", u.path)
         if not m:
             return self._send(404, {"error": "non trovato"})
         store.command("delete_fw", int(m.group(1)))

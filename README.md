@@ -10,7 +10,8 @@ Dalla dashboard si sceglie un firewall e si filtrano i suoi log.
 - Formati riconosciuti: pfSense, OPNsense, FortiGate, Sophos Firewall, Palo Alto,
   Cisco ASA/FTD, MikroTik, SonicWall, Zyxel, iptables/UFW, UniFi e in generale i log
   `chiave=valore`. Gli altri messaggi vengono comunque salvati e sono cercabili per testo.
-- Conservazione automatica (90 giorni di default) e protezione del disco pieno.
+- Conservazione automatica (90 giorni di default, modificabile per ogni firewall),
+  eliminazione dei log dalla dashboard e protezione del disco pieno.
 
 Non è un SIEM: niente correlazione, alert o gestione utenti.
 
@@ -316,7 +317,7 @@ Tutto in `/etc/fwlog/fwlog.env`; dopo una modifica: `sudo systemctl restart fwlo
 | `FWLOG_WEB_USER` | `admin` | utente |
 | `FWLOG_WEB_PASS` | generata | password; se vuota la dashboard **non** è protetta |
 | `FWLOG_TLS_CERT`, `FWLOG_TLS_KEY` | `/etc/fwlog/tls.*` | certificato; se vuoti la dashboard è in HTTP |
-| `FWLOG_RETENTION_DAYS` | `90` | giorni di conservazione, `0` = senza limite |
+| `FWLOG_RETENTION_DAYS` | `90` | conservazione predefinita in giorni, `0` = senza limite; ogni firewall può averne una propria dalla dashboard |
 | `FWLOG_MIN_FREE_GB` | `2` | sotto questo spazio libero vengono eliminati i log più vecchi |
 | `FWLOG_ALLOWED_SOURCES` | vuoto | IP/subnet ammessi, es. `192.168.1.1,10.0.0.0/24`; vuoto = tutti |
 | `FWLOG_QUEUE_MAX` | `200000` | messaggi in attesa di scrittura; oltre vengono scartati |
@@ -341,7 +342,8 @@ misurati con i campioni di prova). Un disco da 100 GB contiene quindi circa
 
 La media reale è visibile nella barra laterale (msg/min per firewall). Ogni minuto fwlog:
 
-- elimina i log più vecchi di `FWLOG_RETENTION_DAYS`;
+- elimina i log più vecchi della conservazione di ciascun firewall (pulsante
+  **Conservazione** nella dashboard; se non impostata vale `FWLOG_RETENTION_DAYS`);
 - se lo spazio libero scende sotto `FWLOG_MIN_FREE_GB`, elimina i log più vecchi finché
   non torna sopra soglia. Il disco quindi non si riempie mai, ma la conservazione
   effettiva può risultare più breve di quella impostata.
@@ -373,8 +375,18 @@ Il piè della barra laterale mostra spazio libero, dimensione del database e **m
 scartati**. Se gli scartati crescono, il server non riesce a scrivere abbastanza in
 fretta: verifica la velocità del disco o riduci i log inviati (es. solo traffico negato).
 
-**Elimina** nella dashboard cancella un firewall e tutti i suoi log. Se il firewall
-continua a inviare, ricompare automaticamente (vuoto).
+Pulsanti nell'intestazione di un firewall:
+
+- **Conservazione**: per quanti giorni tenere i log di quel firewall (predefinita,
+  un valore a scelta o illimitata). I log oltre il limite spariscono entro un minuto.
+- **Elimina log**: cancella i log più vecchi di N giorni, solo quelli che corrispondono
+  ai filtri applicati (es. `Azione = deny` e `Porta dst = 53`), oppure tutti. Prima di
+  confermare mostra quanti log verranno eliminati; i log che arrivano nel frattempo non
+  vengono toccati. Le eliminazioni grandi procedono a blocchi senza fermare la ricezione.
+- **Elimina firewall**: cancella il firewall e tutti i suoi log. Se il firewall
+  continua a inviare, ricompare automaticamente (vuoto).
+
+Lo spazio liberato viene riutilizzato dal database; il file si riduce gradualmente.
 
 ---
 
