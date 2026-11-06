@@ -101,7 +101,7 @@ cd fwlog
 sudo ./install.sh
 ```
 
-Per usare una porta diversa da 8443 per la dashboard: `sudo WEB_PORT=9443 ./install.sh`
+Per usare una porta diversa da 8443 per la dashboard: `sudo WEB_PORT=10443 ./install.sh`
 (vale alla prima installazione). Su Rocky Linux 9 segui
 [docs/INSTALL-ROCKY9.md](docs/INSTALL-ROCKY9.md).
 
