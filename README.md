@@ -98,11 +98,11 @@ Su Ubuntu 24.04 o successivo (testato su 26.04), con il disco dati già montato:
 ```bash
 git clone https://github.com/MattiaC46/fwlog.git
 cd fwlog
-sudo ./install.sh
+sudo WEB_PORT=10443 ./install.sh
 ```
 
-Per usare una porta diversa da 8443 per la dashboard: `sudo WEB_PORT=10443 ./install.sh`
-(vale alla prima installazione). Su Rocky Linux 9 segui
+`WEB_PORT` imposta la porta della dashboard (qui **10443**; senza la variabile sarebbe 8443)
+e vale solo alla prima installazione. Va scritta dopo `sudo`. Su Rocky Linux 9 segui
 [docs/INSTALL-ROCKY9.md](docs/INSTALL-ROCKY9.md).
 
 Il repository è privato: per clonarlo sulla VM serve un accesso GitHub (es. `gh auth login`
@@ -125,7 +125,7 @@ Se `ufw` è attivo, apri le porte (meglio limitandole alle reti dei firewall):
 ```bash
 sudo ufw allow from 192.168.1.0/24 to any port 514 proto udp
 sudo ufw allow from 192.168.1.0/24 to any port 514 proto tcp
-sudo ufw allow from 192.168.1.0/24 to any port 8443 proto tcp
+sudo ufw allow from 192.168.1.0/24 to any port 10443 proto tcp
 ```
 
 **Aggiornamento:** `git pull && sudo ./install.sh`. Configurazione, certificato e
@@ -135,7 +135,7 @@ database non vengono toccati.
 
 ## 3. Primo accesso
 
-1. Apri `https://<IP-della-VM>:8443/`.
+1. Apri `https://<IP-della-VM>:10443/`.
 2. Il certificato è autofirmato: accetta l'avviso del browser.
 3. Accedi con utente `admin` e la password stampata dall'installazione.
 
@@ -320,7 +320,7 @@ Tutto in `/etc/fwlog/fwlog.env`; dopo una modifica: `sudo systemctl restart fwlo
 | `FWLOG_SYSLOG_UDP` | `514` | porta UDP, `0` = disattivata |
 | `FWLOG_SYSLOG_TCP` | `514` | porta TCP, `0` = disattivata |
 | `FWLOG_WEB_BIND` | `0.0.0.0` | indirizzo della dashboard |
-| `FWLOG_WEB_PORT` | `8443` | porta della dashboard |
+| `FWLOG_WEB_PORT` | `8443` | porta della dashboard (con `WEB_PORT=10443` all'installazione: `10443`) |
 | `FWLOG_WEB_USER` | `admin` | utente |
 | `FWLOG_WEB_PASS` | generata | password; se vuota la dashboard **non** è protetta |
 | `FWLOG_TLS_CERT`, `FWLOG_TLS_KEY` | `/etc/fwlog/tls.*` | certificato; se vuoti la dashboard è in HTTP |
