@@ -1,10 +1,10 @@
 # Installazione pulita su Rocky Linux 9
 
 Guida passo passo per installare fwlog su una VM **Rocky Linux 9** in Proxmox, partendo
-da zero, con la dashboard su una **porta diversa dalla 8443**.
+da zero, con la dashboard sulla porta **10443** (il default).
 
-Negli esempi la porta della dashboard è **10443**: sostituiscila con quella che preferisci
-(qualsiasi porta libera tra 1 e 65535, tranne 514).
+Per usare un'altra porta passa `WEB_PORT=<porta>` a `install.sh` (§ 4) e sostituisci 10443
+negli esempi (qualsiasi porta libera tra 1 e 65535, tranne 514).
 
 > La guida generale (configurazione dei firewall, filtri, variabili) resta il
 > [README](../README.md). Qui ci sono solo le differenze e i passaggi per Rocky 9.
@@ -98,10 +98,11 @@ o una deploy key). In alternativa copia la cartella con `scp`.
 ```bash
 git clone https://github.com/MattiaC46/fwlog.git
 cd fwlog
-sudo WEB_PORT=10443 ./install.sh
+sudo ./install.sh
 ```
 
-`WEB_PORT` va passata **dopo** `sudo` (sudo non conserva le variabili d'ambiente).
+La dashboard sarà sulla porta 10443. Per un'altra porta: `sudo WEB_PORT=11443 ./install.sh`
+(`WEB_PORT` va passata **dopo** `sudo`, che non conserva le variabili d'ambiente).
 
 Lo script:
 

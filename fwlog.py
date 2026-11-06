@@ -44,7 +44,7 @@ SYSLOG_BIND = E("FWLOG_SYSLOG_BIND", "0.0.0.0")
 SYSLOG_UDP = int(E("FWLOG_SYSLOG_UDP", "514"))      # 0 = disattivato
 SYSLOG_TCP = int(E("FWLOG_SYSLOG_TCP", "514"))      # 0 = disattivato
 WEB_BIND = E("FWLOG_WEB_BIND", "0.0.0.0")
-WEB_PORT = int(E("FWLOG_WEB_PORT", "8443"))
+WEB_PORT = int(E("FWLOG_WEB_PORT", "10443"))
 WEB_USER = E("FWLOG_WEB_USER", "admin")
 WEB_PASS = E("FWLOG_WEB_PASS", "")
 TLS_CERT = E("FWLOG_TLS_CERT", "")

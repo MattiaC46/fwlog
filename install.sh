@@ -5,7 +5,8 @@
 #
 #   sudo ./install.sh                 installazione normale
 #   sudo FORCE=1 ./install.sh         anche se /srv/fwlog non e' un disco separato
-#   sudo WEB_PORT=10443 ./install.sh  porta della dashboard (solo alla prima installazione)
+#   sudo WEB_PORT=11443 ./install.sh  altra porta per la dashboard (default 10443,
+#                                     solo alla prima installazione)
 set -euo pipefail
 
 APP=/opt/fwlog
@@ -19,7 +20,8 @@ warn() { printf '\033[1;33mATTENZIONE:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERRORE:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "eseguire come root (sudo ./install.sh)"
-WEB_PORT=${WEB_PORT:-8443}
+WEB_PORT_SET=${WEB_PORT:+1}
+WEB_PORT=${WEB_PORT:-10443}
 case $WEB_PORT in ''|*[!0-9]*) die "WEB_PORT non valida: $WEB_PORT" ;; esac
 [ "$WEB_PORT" -ge 1 ] && [ "$WEB_PORT" -le 65535 ] && [ "$WEB_PORT" -ne 514 ] \
     || die "WEB_PORT deve essere tra 1 e 65535 e diversa da 514"
@@ -114,7 +116,7 @@ EOF
     )
     chown root:fwlog "$ENV_FILE"
     chmod 0640 "$ENV_FILE"
-elif [ "$WEB_PORT" != "8443" ] && ! grep -q "^FWLOG_WEB_PORT=$WEB_PORT\$" "$ENV_FILE"; then
+elif [ -n "$WEB_PORT_SET" ] && ! grep -q "^FWLOG_WEB_PORT=$WEB_PORT\$" "$ENV_FILE"; then
     warn "$ENV_FILE esiste gia': WEB_PORT=$WEB_PORT ignorata. Per cambiare porta"
     warn "modificare FWLOG_WEB_PORT nel file e poi: systemctl restart fwlog"
 fi
@@ -153,9 +155,9 @@ echo
 info "fwlog e' attivo."
 echo "    Dashboard:"
 for ip in $IPS; do
-    case $ip in *:*) echo "      https://[$ip]:${PORT:-8443}/" ;; *) echo "      https://$ip:${PORT:-8443}/" ;; esac
+    case $ip in *:*) echo "      https://[$ip]:${PORT:-10443}/" ;; *) echo "      https://$ip:${PORT:-10443}/" ;; esac
 done
-echo "      https://$HOST_F:${PORT:-8443}/"
+echo "      https://$HOST_F:${PORT:-10443}/"
 echo "    Utente:   ${USER_W:-admin}"
 if [ -n "$NEW_PASS" ]; then
     echo "    Password: $NEW_PASS"
@@ -171,13 +173,13 @@ if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q "
     warn "ufw e' attivo. Per aprire le porte (meglio limitare alle reti dei firewall):"
     echo "    ufw allow 514/udp"
     echo "    ufw allow 514/tcp"
-    echo "    ufw allow ${PORT:-8443}/tcp"
+    echo "    ufw allow ${PORT:-10443}/tcp"
     echo "    # esempio con restrizione: ufw allow from 192.168.1.0/24 to any port 514 proto udp"
 fi
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     echo
     warn "firewalld e' attivo. Per aprire le porte (meglio limitare alle reti dei firewall):"
-    echo "    firewall-cmd --permanent --add-port=514/udp --add-port=514/tcp --add-port=${PORT:-8443}/tcp"
+    echo "    firewall-cmd --permanent --add-port=514/udp --add-port=514/tcp --add-port=${PORT:-10443}/tcp"
     echo "    firewall-cmd --reload"
     echo "    # restrizioni per rete: vedi docs/INSTALL-ROCKY9.md"
 fi
