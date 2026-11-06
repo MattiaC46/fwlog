@@ -57,7 +57,28 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .empty { margin: auto; text-align: center; color: var(--muted); padding: 40px 20px; max-width: 420px; }
 .empty h2 { color: var(--text); font-size: 18px; font-weight: 600; margin: 0 0 6px; }
 #view { display: flex; flex-direction: column; min-height: 0; flex: 1; }
-header.fw { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 20px 10px; }
+header.fw { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 4px 20px 10px; }
+
+/* ricerca firewall */
+.topbar { display: flex; justify-content: flex-end; padding: 10px 20px 0; }
+.search { position: relative; width: min(320px, 100%); }
+.search input { width: 100%; border: 1px solid var(--border); background: var(--panel); border-radius: 6px;
+  padding: 6px 10px 6px 30px; }
+.search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px;
+  color: var(--muted); pointer-events: none; }
+.search kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 11px var(--mono);
+  color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; pointer-events: none; }
+.search input:focus ~ kbd, .search input:not(:placeholder-shown) ~ kbd { display: none; }
+#search-res { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0; margin: 0; padding: 4px;
+  list-style: none; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.14); max-height: 60vh; overflow-y: auto; }
+#search-res li { display: grid; grid-template-columns: 12px 1fr; gap: 0 8px; align-items: center;
+  padding: 6px 8px; border-radius: 5px; cursor: pointer; }
+#search-res li[aria-selected="true"] { background: var(--sel); }
+#search-res li .ip { grid-column: 2; font-size: 12px; color: var(--muted); }
+#search-res li.none { display: block; color: var(--muted); cursor: default; }
+#search-res mark { background: none; color: var(--accent); font-weight: 650; }
 header.fw h1 { font-size: 19px; margin: 0; font-weight: 650; overflow-wrap: anywhere; }
 header.fw .info { color: var(--muted); font-size: 13px; }
 .actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; }
@@ -134,6 +155,8 @@ dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .app { display: block; height: auto; }
   aside { border-right: 0; border-bottom: 1px solid var(--border); }
   #fwlist { max-height: 40vh; }
+  .topbar { padding: 10px 12px 0; }
+  .search { width: 100%; }
   main { min-height: 60vh; }
   .tablewrap { overflow-x: auto; overflow-y: visible; }
   header.fw, form.filters, .foot { padding-left: 12px; padding-right: 12px; }
@@ -152,6 +175,15 @@ dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   </aside>
 
   <main>
+    <div class="topbar">
+      <div class="search">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/></svg>
+        <input id="search" type="search" placeholder="Cerca firewall per nome o IP" autocomplete="off" spellcheck="false"
+          role="combobox" aria-expanded="false" aria-controls="search-res" aria-autocomplete="list" aria-label="Cerca firewall">
+        <kbd>/</kbd>
+        <ul id="search-res" role="listbox" hidden></ul>
+      </div>
+    </div>
     <div class="empty" id="empty">
       <h2>Scegli un firewall</h2>
       <div id="empty-text">Seleziona un firewall nella barra laterale per vederne i log.</div>
@@ -835,6 +867,105 @@ dlgDelete.addEventListener("close", async () => {
     $("#b-live").setAttribute("aria-pressed", "false");
     location.hash = "";
   } catch (e) { showError(e.message); }
+});
+
+/* ---------------- ricerca firewall ---------------- */
+
+const sInput = $("#search"), sRes = $("#search-res");
+let sItems = [], sIdx = 0;
+
+// testo con la parte trovata evidenziata (solo nodi di testo, niente HTML)
+function marked(text, q) {
+  const span = el("span"), i = text.toLowerCase().indexOf(q);
+  if (!q || i < 0) { span.textContent = text; return span; }
+  span.append(text.slice(0, i), el("mark", null, text.slice(i, i + q.length)), text.slice(i + q.length));
+  return span;
+}
+
+function searchMatches(q) {
+  const out = [];
+  for (const f of st.fws) {
+    const n = f.name.toLowerCase(), ip = f.ip.toLowerCase();
+    const rank = n.startsWith(q) || ip.startsWith(q) ? 0 : n.includes(q) || ip.includes(q) ? 1 : -1;
+    if (rank >= 0) out.push([rank, f]);
+  }
+  out.sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name, "it"));
+  return out.slice(0, 50).map((x) => x[1]);
+}
+
+function renderSearch() {
+  const q = sInput.value.trim().toLowerCase();
+  if (!q) { closeSearch(); return; }
+  sItems = searchMatches(q);
+  sIdx = Math.min(sIdx, Math.max(0, sItems.length - 1));
+  sRes.replaceChildren();
+  if (!sItems.length) sRes.append(el("li", "none", "Nessun firewall trovato"));
+  sItems.forEach((f, i) => {
+    const li = el("li");
+    li.id = "sr-" + i;
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", String(i === sIdx));
+    const age = f.last_seen == null ? null : st.now - f.last_seen;
+    const dot = el("span", "dot" + (age != null && age < 120e3 ? " ok" : age != null && age < 900e3 ? " warn" : ""));
+    const name = marked(f.name, q); name.className = "fw-name";
+    const ip = marked(f.ip, q); ip.className = "ip mono";
+    li.append(dot, name, ip);
+    li.addEventListener("mousedown", (e) => { e.preventDefault(); pickSearch(i); });
+    li.addEventListener("mousemove", () => { if (sIdx !== i) { sIdx = i; markSearch(); } });
+    sRes.append(li);
+  });
+  sRes.hidden = false;
+  sInput.setAttribute("aria-expanded", "true");
+  markSearch();
+}
+
+function markSearch() {
+  sRes.querySelectorAll("li[role=option]").forEach((li, i) => li.setAttribute("aria-selected", String(i === sIdx)));
+  const cur = $("#sr-" + sIdx);
+  if (cur) { sInput.setAttribute("aria-activedescendant", cur.id); cur.scrollIntoView({ block: "nearest" }); }
+  else sInput.removeAttribute("aria-activedescendant");
+}
+
+function closeSearch() {
+  sRes.hidden = true;
+  sRes.replaceChildren();
+  sItems = [];
+  sInput.setAttribute("aria-expanded", "false");
+  sInput.removeAttribute("aria-activedescendant");
+}
+
+function pickSearch(i) {
+  const f = sItems[i];
+  if (!f) return;
+  sInput.value = "";
+  closeSearch();
+  sInput.blur();
+  location.hash = "fw-" + f.id;
+}
+
+sInput.addEventListener("input", () => { sIdx = 0; renderSearch(); });
+sInput.addEventListener("focus", renderSearch);
+sInput.addEventListener("blur", closeSearch);
+sInput.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (!sItems.length) return;
+    e.preventDefault();
+    sIdx = (sIdx + (e.key === "ArrowDown" ? 1 : -1) + sItems.length) % sItems.length;
+    markSearch();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    pickSearch(sIdx);
+  } else if (e.key === "Escape") {
+    if (sInput.value) { sInput.value = ""; closeSearch(); } else sInput.blur();
+  }
+});
+// "/" porta il cursore nella ricerca (se non si sta già scrivendo altrove)
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  if (t.closest && t.closest("input, textarea, select, dialog, [contenteditable]")) return;
+  e.preventDefault();
+  sInput.focus();
 });
 
 /* ---------------- avvio ---------------- */
