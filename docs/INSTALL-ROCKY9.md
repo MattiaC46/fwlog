@@ -1,6 +1,6 @@
 # Installazione pulita su Rocky Linux 9
 
-Guida passo passo per installare fwlog su una VM **Rocky Linux 9** in Proxmox, partendo
+Guida passo passo per installare fwlog su una VM **Rocky Linux 9** in Proxmox o Hyper-V, partendo
 da zero, con la dashboard sulla porta **10443** (il default).
 
 Per usare un'altra porta passa `WEB_PORT=<porta>` a `install.sh` (§ 4) e sostituisci 10443
@@ -26,6 +26,8 @@ negli esempi (qualsiasi porta libera tra 1 e 65535, tranne 514).
 
 ## 1. Creazione della VM in Proxmox
 
+Su Hyper-V segui invece il § 1-bis.
+
 1. Crea la VM con l'ISO di Rocky Linux 9 (installazione *Minimal* sufficiente).
 2. Disco di sistema: 15–20 GB.
 3. **Hardware → Add → Hard Disk**: secondo disco per i log (dimensione in base ai volumi,
@@ -41,6 +43,34 @@ Dopo il primo avvio aggiorna il sistema:
 sudo dnf -y update
 sudo reboot
 ```
+
+---
+
+## 1-bis. Creazione della VM in Hyper-V
+
+1. *Nuova → Macchina virtuale*, **Generazione 2**.
+2. Memoria: 2 GB sono sufficienti; la memoria dinamica si può lasciare attiva.
+3. Disco di sistema: **VHDX a espansione dinamica** da 15–20 GB.
+4. Prima del primo avvio, in *Impostazioni → Sicurezza* lascia attivo l'Avvio protetto ma
+   scegli il modello **Autorità di certificazione UEFI Microsoft**: con il modello
+   predefinito "Microsoft Windows" Rocky non si avvia.
+5. Disco dati: *Impostazioni → Controller SCSI → Disco rigido → Aggiungi → Nuovo*,
+   VHDX a espansione dinamica (dimensione come al § 1 punto 3). Se prepari un template
+   da clonare, **non** aggiungerlo ora (vedi § 12).
+6. Installa Rocky (*Minimal*) con IP statico e, nella schermata dei dischi, seleziona solo
+   il disco di sistema.
+
+Dopo il primo avvio installa i servizi di integrazione di Hyper-V (IP visibile nella
+console di Hyper-V, arresto pulito, sincronizzazione dell'ora) e aggiorna il sistema:
+
+```bash
+sudo dnf -y install hyperv-daemons
+sudo dnf -y update
+sudo reboot
+```
+
+Nella VM i dischi del controller SCSI compaiono come `/dev/sda` (sistema) e `/dev/sdb`
+(dati): verifica sempre con `lsblk` al § 2.
 
 ---
 
@@ -216,8 +246,9 @@ cd fwlog && git pull && sudo ./install.sh
 
 Configurazione, certificato, porta e database non vengono toccati.
 
-**Ampliare il disco dati:** aumenta il disco in Proxmox (*Disk Action → Resize*), poi
-sulla VM, a caldo:
+**Ampliare il disco dati:** aumenta il disco in Proxmox (*Disk Action → Resize*) o in
+Hyper-V (*Impostazioni → disco dati → Modifica → Espandi*; a VM accesa funziona solo con
+dischi sul controller SCSI), poi sulla VM, a caldo:
 
 ```bash
 echo 1 | sudo tee /sys/class/block/sdb/device/rescan
@@ -236,6 +267,7 @@ df -h /srv/fwlog
 | Dashboard irraggiungibile, `curl -k https://localhost:10443/` funziona | firewalld: controlla `sudo firewall-cmd --list-all` (§ 5). |
 | Nessun log dai firewall | `sudo tcpdump -ni any port 514` per vedere se arrivano; poi firewalld e `FWLOG_ALLOWED_SOURCES`. |
 | `Address already in use` nel journal | Un altro servizio usa 514 o la porta della dashboard (§ 3). |
+| VM Hyper-V che non si avvia (*The image's hash and certificate are not allowed* o simili) | Avvio protetto con il modello sbagliato: § 1-bis punto 4. |
 | Rifiuti SELinux in `ausearch` | Riapplica le etichette: `sudo restorecon -Rv /srv/fwlog /opt/fwlog /etc/fwlog`. |
 
 ---
@@ -253,7 +285,8 @@ rimuove; `install.sh`, eseguito da ogni cliente, li rigenera.
 
 ### Sulla VM template
 
-1. Installa Rocky come ai §§ 1 e 3, **con il solo disco di sistema** (salta il § 2).
+1. Installa Rocky come ai §§ 1 (o 1-bis per Hyper-V) e 3, **con il solo disco di sistema**
+   (salta il § 2).
 2. Copia il repository in una posizione fissa, ad esempio `/root/fwlog`:
    ```bash
    sudo git clone https://github.com/MattiaC46/fwlog.git /root/fwlog
@@ -275,14 +308,20 @@ rimuove; `install.sh`, eseguito da ogni cliente, li rigenera.
    - pulisce cache, journal e cronologia.
 6. **Non riavviare** la VM prima della copia: al primo avvio machine-id e chiavi SSH
    verrebbero rigenerati e il template non sarebbe più pulito. Esporta ora il disco.
+7. **Hyper-V:** prima di copiare il `.vhdx` elimina tutti i checkpoint della VM e attendi
+   che Hyper-V finisca di unirli (colonna *Stato*). Altrimenti le modifiche più recenti
+   restano nei file `.avhdx` e il `.vhdx` copiato da solo è vecchio o incompleto.
+   Copia il file a VM spenta, oppure usa *Esporta*.
 
 ### Da ogni cliente
 
-1. Importa il disco e avvia la VM.
+1. Importa il disco e avvia la VM. Su Hyper-V: crea una nuova VM di **Generazione 2**
+   con lo stesso modello di Avvio protetto (§ 1-bis punto 4) e collega **una copia** del
+   `.vhdx`, mai l'originale del template.
 2. Imposta hostname e IP definitivi (`nmtui` oppure `nmcli`, `hostnamectl set-hostname`).
    Vanno impostati **prima** di `install.sh`, che li scrive nel certificato.
-3. Aggiungi il disco dati (Hyper-V: *Impostazioni → Controller SCSI → Disco rigido*;
-   Proxmox: § 1 punto 3) e preparalo come al § 2.
+3. Aggiungi il disco dati (Hyper-V: § 1-bis punto 5; Proxmox: § 1 punto 3) e preparalo
+   come al § 2.
 4. Installa:
    ```bash
    cd /root/fwlog
