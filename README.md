@@ -131,6 +131,11 @@ sudo ufw allow from 192.168.1.0/24 to any port 10443 proto tcp
 **Aggiornamento:** `git pull && sudo ./install.sh`. Configurazione, certificato e
 database non vengono toccati.
 
+**VM template da clonare per più clienti:** prima della copia esegui
+`sudo ./prepara-template.sh`, poi da ogni cliente monta il disco dati ed esegui
+`sudo ./install.sh` (password e certificato nuovi). Procedura in
+[docs/INSTALL-ROCKY9.md § 12](docs/INSTALL-ROCKY9.md#12-vm-template-da-distribuire-ai-clienti).
+
 ---
 
 ## 3. Primo accesso

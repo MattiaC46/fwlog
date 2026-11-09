@@ -237,3 +237,59 @@ df -h /srv/fwlog
 | Nessun log dai firewall | `sudo tcpdump -ni any port 514` per vedere se arrivano; poi firewalld e `FWLOG_ALLOWED_SOURCES`. |
 | `Address already in use` nel journal | Un altro servizio usa 514 o la porta della dashboard (§ 3). |
 | Rifiuti SELinux in `ausearch` | Riapplica le etichette: `sudo restorecon -Rv /srv/fwlog /opt/fwlog /etc/fwlog`. |
+
+---
+
+## 12. VM template da distribuire ai clienti
+
+Si può preparare una VM una volta sola e copiarla da ogni cliente (VHDX per Hyper-V,
+qcow2 o template Proxmox). Il **disco dati non fa parte del template**: si aggiunge da
+ogni cliente.
+
+Password, certificato TLS, machine-id e chiavi SSH devono essere **diversi per ogni
+cliente**. Copiando una VM con fwlog già installato, tutti i clienti avrebbero la stessa
+password della dashboard e la stessa chiave privata TLS. `prepara-template.sh` li
+rimuove; `install.sh`, eseguito da ogni cliente, li rigenera.
+
+### Sulla VM template
+
+1. Installa Rocky come ai §§ 1 e 3, **con il solo disco di sistema** (salta il § 2).
+2. Copia il repository in una posizione fissa, ad esempio `/root/fwlog`:
+   ```bash
+   sudo git clone https://github.com/MattiaC46/fwlog.git /root/fwlog
+   sudo dnf -y install python3 openssl
+   ```
+3. Facoltativo: apri già le porte in firewalld (§ 5), valgono anche per i cloni.
+4. Facoltativo, per provare il template: `cd /root/fwlog && sudo FORCE=1 ./install.sh`.
+   Con `FORCE=1` il database finisce sul disco di sistema; lo script del punto 5 lo elimina.
+5. Prepara il template e spegni la VM:
+   ```bash
+   cd /root/fwlog
+   sudo SPEGNI=1 ./prepara-template.sh
+   ```
+   Lo script si ferma se `/srv/fwlog` è montato o compare in `/etc/fstab`. Poi:
+   - ferma e disattiva fwlog;
+   - svuota `/srv/fwlog`;
+   - elimina `fwlog.env`, `tls.crt` e `tls.key`;
+   - azzera machine-id e chiavi host SSH;
+   - pulisce cache, journal e cronologia.
+6. **Non riavviare** la VM prima della copia: al primo avvio machine-id e chiavi SSH
+   verrebbero rigenerati e il template non sarebbe più pulito. Esporta ora il disco.
+
+### Da ogni cliente
+
+1. Importa il disco e avvia la VM.
+2. Imposta hostname e IP definitivi (`nmtui` oppure `nmcli`, `hostnamectl set-hostname`).
+   Vanno impostati **prima** di `install.sh`, che li scrive nel certificato.
+3. Aggiungi il disco dati (Hyper-V: *Impostazioni → Controller SCSI → Disco rigido*;
+   Proxmox: § 1 punto 3) e preparalo come al § 2.
+4. Installa:
+   ```bash
+   cd /root/fwlog
+   sudo ./install.sh
+   ```
+   Senza `FORCE` lo script assegna `/srv/fwlog` a `fwlog`, ripristina la unit con
+   `RequiresMountsFor` e genera password e certificato nuovi. Annota la password stampata.
+5. Verifica come al § 7.
+
+Per aggiornare fwlog su un cliente: `cd /root/fwlog && sudo git pull && sudo ./install.sh`.
