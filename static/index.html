@@ -61,6 +61,7 @@ aside { background: var(--panel); border-right: 1px solid var(--border); display
 .side-foot { border-top: 1px solid var(--border); padding: 10px 16px; font-size: 12px; color: var(--muted); display: grid; gap: 2px; }
 .side-foot b { color: var(--text); font-weight: 550; }
 .side-foot .bad b { color: var(--warn); }
+.side-foot .rej { padding-left: 12px; font-size: 11.5px; overflow-wrap: anywhere; }
 
 /* area principale */
 main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -588,11 +589,30 @@ function renderSidebar() {
       const d = el("div", bad ? "bad" : null, label + " ");
       d.append(el("b", null, value));
       foot.append(d);
+      return d;
     };
     line("Spazio libero", fmtBytes(s.disk_free) + " di " + fmtBytes(s.disk_total), s.disk_free < 5 * 1024 ** 3);
     line("Database", fmtBytes(s.db_size) + " · conservazione predefinita " + daysText(s.retention_days));
     line("Messaggi scartati", nf.format(s.dropped), s.dropped > 0);
-    if (s.rejected) line("Da sorgenti non ammesse", nf.format(s.rejected), true);
+    if (s.sources_bad && s.sources_bad.length) {
+      line("Voci ignorate in FWLOG_ALLOWED_SOURCES:", s.sources_bad.join(", "), true).title =
+        "Non sono IP o subnet validi: correggile in /etc/fwlog/fwlog.env e riavvia fwlog.";
+    }
+    if (s.sources_open) {
+      line("Sorgenti syslog", "tutte ammesse", true).title =
+        "Chiunque raggiunga la porta 514 può inviare log. Indica i firewall e gli switch in " +
+        "FWLOG_ALLOWED_SOURCES (/etc/fwlog/fwlog.env) e riavvia fwlog.";
+    }
+    if (s.rejected) {
+      line("Da sorgenti non ammesse", nf.format(s.rejected), true).title =
+        "Messaggi UDP e connessioni TCP rifiutati. Se uno degli IP qui sotto è un tuo dispositivo, " +
+        "aggiungilo a FWLOG_ALLOWED_SOURCES.";
+      for (const r of s.rejected_ips || []) {
+        const d = el("div", "rej mono", r.ip + " · " + nf.format(r.count) + " · " + fmtAgo(st.now - r.last));
+        d.title = "Ultimo tentativo " + fmtFull(r.last);
+        foot.append(d);
+      }
+    }
   }
 }
 

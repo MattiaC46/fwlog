@@ -57,8 +57,23 @@ TLS_CERT = E("FWLOG_TLS_CERT", "")
 TLS_KEY = E("FWLOG_TLS_KEY", "")
 RETENTION_DAYS = int(E("FWLOG_RETENTION_DAYS", "90"))   # 0 = nessun limite di giorni
 MIN_FREE_GB = float(E("FWLOG_MIN_FREE_GB", "2"))        # spazio minimo da lasciare libero
-ALLOWED_SOURCES = [ipaddress.ip_network(s.strip(), strict=False)
-                   for s in E("FWLOG_ALLOWED_SOURCES", "").split(",") if s.strip()]
+def _parse_sources(text):
+    """IP o subnet separati da virgola. Le voci non valide vengono scartate e
+    segnalate (log e dashboard): un errore di battitura non deve fermare il servizio."""
+    nets, bad = [], []
+    for s in text.split(","):
+        s = s.strip()
+        if not s:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(s.strip("[]"), strict=False))
+        except ValueError:
+            bad.append(s[:60])
+    return nets, bad
+
+
+ALLOWED_SOURCES, BAD_SOURCES = _parse_sources(E("FWLOG_ALLOWED_SOURCES", ""))
+REJECTED_IPS_MAX = 50   # sorgenti rifiutate ricordate (per la dashboard)
 STATIC_DIR = E("FWLOG_STATIC_DIR",
                os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
 AGENT_DIR = E("FWLOG_AGENT_DIR",
@@ -648,6 +663,7 @@ class Store:
         self.received = 0
         self.dropped = 0
         self.rejected = 0
+        self.rejected_ips = {}   # ip -> [messaggi/connessioni rifiutati, ultimo ms]
         self._rates = deque()
         self._lock = threading.Lock()
         self.fw_cache = {}
@@ -691,10 +707,30 @@ class Store:
             return False
         return any(a in n for n in ALLOWED_SOURCES)
 
+    def reject(self, ip):
+        """Conta un messaggio (UDP) o una connessione (TCP) da una sorgente non ammessa,
+        ricordando gli ultimi IP: in dashboard si vede subito un dispositivo dimenticato."""
+        now = int(time.time() * 1000)
+        with self._lock:
+            self.rejected += 1
+            e = self.rejected_ips.get(ip)
+            if e:
+                e[0] += 1
+                e[1] = now
+                return
+            if len(self.rejected_ips) >= REJECTED_IPS_MAX:
+                del self.rejected_ips[min(self.rejected_ips, key=lambda k: self.rejected_ips[k][1])]
+            self.rejected_ips[ip] = [1, now]
+
+    def rejected_list(self, n=10):
+        with self._lock:
+            items = sorted(self.rejected_ips.items(), key=lambda x: -x[1][1])[:n]
+        return [{"ip": ip, "count": c, "last": t} for ip, (c, t) in items]
+
     def submit(self, ip, data):
         ip = norm_ip(ip) or ip
         if not self.allowed(ip):
-            self.rejected += 1
+            self.reject(ip)
             return
         self.received += 1
         try:
@@ -1051,7 +1087,9 @@ def api_firewalls():
         "firewalls": [dict(r, rate=rates.get(r["id"], 0), deleting=r["id"] in store.deleting)
                       for r in rows],
         "stats": {"received": store.received, "dropped": store.dropped,
-                  "rejected": store.rejected, "queue": store.q.qsize(),
+                  "rejected": store.rejected, "rejected_ips": store.rejected_list(),
+                  "sources_open": not ALLOWED_SOURCES, "sources_bad": BAD_SOURCES,
+                  "queue": store.q.qsize(),
                   "disk_free": du.free, "disk_total": du.total, "db_size": db_size,
                   "retention_days": RETENTION_DAYS},
     }
@@ -1591,10 +1629,8 @@ def udp_loop(s):
 
 class SyslogTCP(socketserver.BaseRequestHandler):
     def handle(self):
+        # la sorgente e' gia' stata verificata da TCPServer.verify_request
         ip = self.client_address[0]
-        if not store.allowed(norm_ip(ip) or ip):
-            store.rejected += 1
-            return
         self.request.settimeout(3600)
         buf = b""
         while True:
@@ -1647,6 +1683,15 @@ class TCPServer(socketserver.ThreadingTCPServer):
         super().__init__(*a, **kw)
         self.slots = threading.BoundedSemaphore(MAX_TCP_CONN)
         self.last_warn = 0.0
+
+    def verify_request(self, request, client_address):
+        # sorgenti non ammesse chiuse subito: niente thread e nessun posto occupato
+        # tra le MAX_TCP_CONN connessioni
+        ip = norm_ip(client_address[0]) or client_address[0]
+        if store.allowed(ip):
+            return True
+        store.reject(ip)
+        return False
 
     def process_request(self, request, client_address):
         # oltre MAX_TCP_CONN connessioni le nuove vengono chiuse subito
@@ -1705,8 +1750,12 @@ def main():
         TLS_PIN = cert_pin(TLS_CERT)
     if not WEB_PASS:
         log.warning("FWLOG_WEB_PASS non impostata: la dashboard e' accessibile senza password")
+    for s in BAD_SOURCES:
+        log.error("FWLOG_ALLOWED_SOURCES: voce non valida ignorata: %s", s)
     if ALLOWED_SOURCES:
         log.info("sorgenti syslog ammesse: %s", ", ".join(map(str, ALLOWED_SOURCES)))
+    else:
+        log.warning("FWLOG_ALLOWED_SOURCES vuoto: syslog accettato da qualsiasi IP")
     log.info("dashboard su %s://%s:%d  dati in %s", scheme, WEB_BIND, WEB_PORT, DATA_DIR)
 
     def _term(*_):
