@@ -57,6 +57,9 @@ STATIC_DIR = E("FWLOG_STATIC_DIR",
                os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
 QUEUE_MAX = int(E("FWLOG_QUEUE_MAX", "200000"))
 MAX_RAW = 8192
+MAX_FRAME = 65536      # dimensione massima di un messaggio syslog su TCP
+MAX_TCP_CONN = 500     # connessioni syslog TCP contemporanee
+DELETED = "deleted:"   # prefisso dell'ip di un firewall in eliminazione
 BATCH = 5000
 DEL_BLOCK = 20000
 MAX_RETENTION = 36500
@@ -500,6 +503,10 @@ class Store:
     def _run(self):
         conn = self.connect()
         self.fw_cache = {r["ip"]: r["id"] for r in conn.execute("SELECT id, ip FROM firewalls")}
+        # eliminazioni di firewall interrotte da un riavvio: le riprende
+        for ip, fid in self.fw_cache.items():
+            if ip.startswith(DELETED):
+                self.command("delete_fw", fid)
         last_maint = 0.0
         while True:
             batch = []
@@ -585,31 +592,41 @@ class Store:
                 break
         return done
 
+    def _delete_step(self, conn, name, arg, fid, where, args):
+        """Elimina un blocco di log; se ne restano rimette il comando in coda,
+        per non bloccare a lungo la scrittura dei nuovi log.
+        Restituisce True se l'eliminazione e' completata."""
+        limit = DEL_BLOCK * 5
+        if self._delete_where(conn, fid, where, args, limit) < limit:
+            return True
+        try:
+            self.q.put_nowait(("cmd", name, arg))
+            return False
+        except queue.Full:
+            while self._delete_where(conn, fid, where, args, limit) >= limit:
+                pass
+            return True
+
     def _command(self, conn, name, arg):
         try:
             if name == "delete_fw":
-                while conn.execute("DELETE FROM logs WHERE id IN "
-                                   "(SELECT id FROM logs WHERE fw_id=? LIMIT 50000)", (arg,)).rowcount:
-                    conn.commit()
-                conn.execute("DELETE FROM firewalls WHERE id=?", (arg,))
+                # Il firewall viene prima "rinominato" (ip con prefisso DELETED): sparisce
+                # dalla dashboard, i nuovi log dal suo IP creano un nuovo firewall con un
+                # altro id e, dopo un riavvio, l'eliminazione riprende da qui.
+                conn.execute("UPDATE firewalls SET ip=? WHERE id=?", (f"{DELETED}{arg}", arg))
                 conn.commit()
                 self.fw_cache = {k: v for k, v in self.fw_cache.items() if v != arg}
+                if not self._delete_step(conn, name, arg, arg, "fw_id = ?", [arg]):
+                    return
+                conn.execute("DELETE FROM firewalls WHERE id=?", (arg,))
+                conn.commit()
                 conn.execute("PRAGMA incremental_vacuum").fetchall()
                 log.info("firewall %s eliminato con i suoi log", arg)
             elif name == "delete_logs":
                 fid, where, args, max_id = arg
-                limit = DEL_BLOCK * 5
-                n = self._delete_where(conn, fid, f"{where} AND id <= ?", args + [max_id], limit)
-                if n >= limit:
-                    # ancora da eliminare: rimette il comando in coda per non
-                    # bloccare a lungo la scrittura dei nuovi log
-                    try:
-                        self.q.put_nowait(("cmd", name, arg))
-                        return
-                    except queue.Full:
-                        while self._delete_where(conn, fid, f"{where} AND id <= ?",
-                                                 args + [max_id], limit) >= limit:
-                            pass
+                if not self._delete_step(conn, name, arg, fid, f"{where} AND id <= ?",
+                                         args + [max_id]):
+                    return
                 conn.execute("PRAGMA incremental_vacuum").fetchall()
                 self._done_deleting(fid)
                 log.info("eliminazione log del firewall %s completata", fid)
@@ -729,7 +746,8 @@ def api_firewalls():
     c = store.connect(readonly=True)
     try:
         rows = c.execute("SELECT id, ip, name, first_seen, last_seen, total, retention_days FROM firewalls "
-                         "ORDER BY name COLLATE NOCASE").fetchall()
+                         "WHERE ip NOT LIKE ? ORDER BY name COLLATE NOCASE",
+                         (DELETED + "%",)).fetchall()
     finally:
         c.close()
     rates = store.rates()
@@ -1026,7 +1044,9 @@ class SyslogTCP(socketserver.BaseRequestHandler):
                 return buf
             if buf[:1].isdigit():
                 sp = buf.find(b" ", 0, 12)
-                if sp > 0 and buf[:sp].isdigit():
+                # lunghezze oltre MAX_FRAME non sono octet-counting valido: si tratta
+                # il messaggio come terminato da a capo (memoria per connessione limitata)
+                if sp > 0 and buf[:sp].isdigit() and int(buf[:sp]) <= MAX_FRAME:
                     n = int(buf[:sp])
                     if len(buf) < sp + 1 + n:
                         return buf
@@ -1037,7 +1057,7 @@ class SyslogTCP(socketserver.BaseRequestHandler):
                     return buf
             nl = buf.find(b"\n")
             if nl == -1:
-                if len(buf) > 65536:
+                if len(buf) > MAX_FRAME:
                     store.submit(ip, buf)
                     return b""
                 return buf
@@ -1049,6 +1069,32 @@ class TCPServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
     address_family = _family(SYSLOG_BIND)
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.slots = threading.BoundedSemaphore(MAX_TCP_CONN)
+        self.last_warn = 0.0
+
+    def process_request(self, request, client_address):
+        # oltre MAX_TCP_CONN connessioni le nuove vengono chiuse subito
+        if not self.slots.acquire(blocking=False):
+            if time.time() - self.last_warn > 60:
+                self.last_warn = time.time()
+                log.warning("troppe connessioni syslog TCP (max %d): rifiutata %s",
+                            MAX_TCP_CONN, client_address[0])
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
 
 
 class WebServer(ThreadingHTTPServer):
