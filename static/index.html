@@ -9,7 +9,7 @@
   --bg: #f5f6f8; --panel: #ffffff; --text: #1c2230; --muted: #687080; --border: #e0e4ea;
   --hover: #eef2f7; --sel: #e3ecfb; --accent: #2457c5; --accent-text: #ffffff;
   --allow: #1f9d4c; --deny: #d33030; --warn: #c97a06; --idle: #a3aab5;
-  --allow-bg: #e3f5e9; --deny-bg: #fbe5e5; --neutral-bg: #eceff3;
+  --allow-bg: #e3f5e9; --deny-bg: #fbe5e5; --neutral-bg: #eceff3; --warn-bg: #fbf0dc;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Ubuntu, Roboto, "Helvetica Neue", Arial, sans-serif;
   color-scheme: light;
@@ -19,7 +19,7 @@
     --bg: #101317; --panel: #171b21; --text: #e3e7ed; --muted: #949dab; --border: #2a3039;
     --hover: #1f252d; --sel: #1d2a40; --accent: #6b9cf5; --accent-text: #0d1117;
     --allow: #3fbf6b; --deny: #f06a6a; --warn: #e9a83a; --idle: #5e6672;
-    --allow-bg: #173322; --deny-bg: #3a1c1e; --neutral-bg: #252b33;
+    --allow-bg: #173322; --deny-bg: #3a1c1e; --neutral-bg: #252b33; --warn-bg: #3a2e16;
     color-scheme: dark;
   }
 }
@@ -37,15 +37,25 @@ button, input { font: inherit; color: inherit; }
 aside { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
 .brand { padding: 14px 16px 10px; font-weight: 650; font-size: 16px; letter-spacing: .2px; }
 .brand span { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
-#fwlist { list-style: none; margin: 0; padding: 0 8px 8px; overflow-y: auto; flex: 1; min-height: 0; }
-#fwlist button { display: grid; grid-template-columns: 12px 1fr auto; gap: 2px 8px; align-items: center;
+.lists { overflow-y: auto; flex: 1; min-height: 0; padding-bottom: 8px; }
+.side-list { list-style: none; margin: 0; padding: 0 8px; }
+.side-list button { display: grid; grid-template-columns: 12px 1fr auto; gap: 2px 8px; align-items: center;
   width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 8px; cursor: pointer; }
-#fwlist button:hover { background: var(--hover); }
-#fwlist button[aria-current="true"] { background: var(--sel); }
+.side-list button:hover { background: var(--hover); }
+.side-list button[aria-current="true"] { background: var(--sel); }
+.sec-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px 4px;
+  font-size: 11.5px; font-weight: 650; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); }
+.btn.small { padding: 1px 9px; font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.side-empty { padding: 2px 16px 6px; color: var(--muted); font-size: 12.5px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); }
-.dot.ok { background: var(--allow); } .dot.warn { background: var(--warn); }
+.dot.ok { background: var(--allow); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--deny); }
 .fw-name { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fw-rate { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
+.fw-rate.bad { color: var(--deny); font-weight: 550; }
+.fw-rate.crit { color: var(--warn); font-weight: 550; }
+.tag { display: inline-block; font-size: 10.5px; font-weight: 650; padding: 0 5px; border-radius: 4px; line-height: 16px;
+  background: var(--neutral-bg); color: var(--muted); margin-left: 6px; vertical-align: 1px; font-family: var(--sans); }
+.tag.admin { background: var(--warn-bg); color: var(--warn); }
 .fw-sub { grid-column: 2 / 4; display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
 .side-msg { padding: 8px 16px; color: var(--muted); font-size: 13px; }
 .side-foot { border-top: 1px solid var(--border); padding: 10px 16px; font-size: 12px; color: var(--muted); display: grid; gap: 2px; }
@@ -97,12 +107,18 @@ form.filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(15
 form.filters label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
 form.filters input { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 5px 8px; min-width: 0; font-family: var(--mono); font-size: 12.5px; }
 form.filters input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
-form.filters input.on { border-color: var(--accent); }
+form.filters input.on, form.filters select.on { border-color: var(--accent); }
+form.filters select { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 5px 6px; min-width: 0; }
+form.filters select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+form.filters label.check { flex-direction: row; align-items: center; gap: 6px; align-self: end; padding-bottom: 6px; color: var(--text); font-size: 13px; }
 form.filters label.wide { grid-column: span 2; }
+.warns { margin: 0 20px 8px; display: grid; gap: 6px; }
+.warn-box { padding: 7px 12px; border-radius: 6px; background: var(--warn-bg); font-size: 13px; border-left: 3px solid var(--warn); margin: 0; }
+.warn-box.bad { background: var(--deny-bg); border-left-color: var(--deny); }
 .f-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .f-actions .hint { font-size: 12px; color: var(--muted); }
 
-#err { margin: 10px 20px 0; padding: 8px 12px; border-radius: 6px; background: var(--deny-bg); color: var(--deny); }
+#err, .err { margin: 10px 20px 0; padding: 8px 12px; border-radius: 6px; background: var(--deny-bg); color: var(--deny); }
 
 .tablewrap { flex: 1; min-height: 0; overflow: auto; }
 table { border-collapse: collapse; width: 100%; min-width: 1080px; }
@@ -123,6 +139,10 @@ button.v:hover { color: var(--accent); text-decoration: underline; }
 .badge { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px; font-weight: 550; background: var(--neutral-bg); }
 .badge.allow { background: var(--allow-bg); color: var(--allow); }
 .badge.deny { background: var(--deny-bg); color: var(--deny); }
+.badge.crit { background: var(--warn-bg); color: var(--warn); }
+tr.r.a-crit td:first-child { border-left-color: var(--warn); }
+table.ev { min-width: 940px; }
+table.ev td.msg { width: 34%; }
 button.v.badge:hover { text-decoration: none; filter: brightness(.95); }
 tr.detail td { background: var(--panel); padding: 10px 14px 14px 13px; border-left: 3px solid var(--border); white-space: normal; }
 .kv { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
@@ -146,6 +166,13 @@ dialog .opt input[type=radio] { margin-top: 3px; }
 dialog .opt small { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 dialog .opt.off { opacity: .5; }
 dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+dialog.wide { width: min(660px, 94vw); }
+dialog ol.steps { margin: 0 0 12px; padding-left: 20px; display: grid; gap: 10px; }
+dialog ol.steps input[type=text] { margin-top: 4px; font-family: var(--mono); font-size: 12.5px; }
+pre.cmd { margin: 6px 0; white-space: pre-wrap; word-break: break-all; font-family: var(--mono); font-size: 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; user-select: all; }
+dialog a { color: var(--accent); }
+dialog .err { margin: 10px 0 0; }
 .del-count { font-weight: 550; }
 .del-count.zero { color: var(--muted); font-weight: 400; }
 .deleting { color: var(--warn); }
@@ -153,7 +180,7 @@ dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 @media (max-width: 820px) {
   .app { display: block; height: auto; }
   aside { border-right: 0; border-bottom: 1px solid var(--border); }
-  #fwlist { max-height: 40vh; }
+  .lists { max-height: 45vh; }
   main { min-height: 60vh; }
   .tablewrap { overflow-x: auto; overflow-y: visible; }
   header.fw, form.filters, .foot { padding-left: 12px; padding-right: 12px; }
@@ -165,23 +192,30 @@ dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 <body>
 <div class="app">
   <aside>
-    <div class="brand">fwlog<span>log dei firewall</span></div>
+    <div class="brand">fwlog<span>firewall e accessi admin</span></div>
     <div class="search">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/></svg>
-      <input id="search" type="search" placeholder="Cerca firewall per nome o IP" autocomplete="off" spellcheck="false"
-        role="combobox" aria-expanded="false" aria-controls="search-res" aria-autocomplete="list" aria-label="Cerca firewall">
+      <input id="search" type="search" placeholder="Cerca per nome o IP" autocomplete="off" spellcheck="false"
+        role="combobox" aria-expanded="false" aria-controls="search-res" aria-autocomplete="list" aria-label="Cerca firewall o server">
       <kbd>/</kbd>
       <ul id="search-res" role="listbox" hidden></ul>
     </div>
-    <ul id="fwlist" aria-label="Firewall"></ul>
     <div class="side-msg" id="side-msg" hidden></div>
+    <div class="lists">
+      <div class="sec-head"><span>Firewall</span></div>
+      <ul id="fwlist" class="side-list" aria-label="Firewall"></ul>
+      <div class="side-empty" id="fw-empty" hidden>Nessun firewall ancora. Configura i firewall per inviare syslog a questo server sulla porta 514 (UDP o TCP).</div>
+      <div class="sec-head"><span>Server Windows</span><button class="btn small" id="b-addsrv" type="button">Aggiungi</button></div>
+      <ul id="srvlist" class="side-list" aria-label="Server Windows"></ul>
+      <div class="side-empty" id="srv-empty" hidden>Nessun server. Aggiungine uno per registrare gli accessi degli amministratori.</div>
+    </div>
     <div class="side-foot" id="side-foot"></div>
   </aside>
 
   <main>
     <div class="empty" id="empty">
-      <h2>Scegli un firewall</h2>
-      <div id="empty-text">Seleziona un firewall nella barra laterale per vederne i log.</div>
+      <h2>Scegli un firewall o un server</h2>
+      <div id="empty-text">Seleziona un firewall o un server Windows nella barra laterale.</div>
     </div>
 
     <div id="view" hidden>
@@ -240,12 +274,65 @@ dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
         </div>
       </div>
     </div>
+
+    <div id="sview" hidden>
+      <header class="fw">
+        <div>
+          <h1 id="sv-name"></h1>
+          <div class="info" id="sv-info"></div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="sv-live" type="button" aria-pressed="false"><span class="live-dot"></span>Live</button>
+          <button class="btn" id="sv-csv" type="button" title="Esporta gli eventi filtrati (massimo 100.000 righe)">Esporta CSV</button>
+          <button class="btn" id="sv-retention" type="button">Conservazione</button>
+          <button class="btn" id="sv-rename" type="button">Rinomina</button>
+          <button class="btn" id="sv-token" type="button" title="Genera un nuovo token per l'agente (il vecchio smette di funzionare)">Nuovo token</button>
+          <button class="btn danger" id="sv-delete" type="button">Elimina server</button>
+        </div>
+      </header>
+      <div class="warns" id="sv-warns"></div>
+
+      <form class="filters" id="sfilters" autocomplete="off">
+        <label>Utente <input name="user" list="dl-user" placeholder="es. mrossi"></label>
+        <label>IP di origine <input name="ip" placeholder="IP o CIDR"></label>
+        <label>Computer di origine <input name="host" list="dl-host"></label>
+        <label>Evento <select name="kind" id="sf-kind"><option value="">Tutti</option></select></label>
+        <label>Esito <select name="outcome"><option value="">Tutti</option><option value="ok">Riuscito</option><option value="fail">Fallito</option></select></label>
+        <label>Tipo di accesso <select name="logon_type" id="sf-lt"><option value="">Tutti</option></select></label>
+        <label class="wide">Testo <input name="q" placeholder="cerca in tutti i campi"></label>
+        <label>Da <input name="from" type="datetime-local" step="1"></label>
+        <label>A <input name="to" type="datetime-local" step="1"></label>
+        <label class="check"><input type="checkbox" name="critical" value="1"> Solo eventi critici</label>
+        <div class="f-actions">
+          <button class="btn primary" type="submit">Applica filtri</button>
+          <button class="btn" type="button" id="sb-reset">Azzera</button>
+          <span class="hint">CIDR ammesso, ! per escludere un utente, un IP o un computer. Clic su un valore in tabella per filtrarlo, Alt+clic per escluderlo.</span>
+        </div>
+        <datalist id="dl-user"></datalist><datalist id="dl-host"></datalist>
+      </form>
+
+      <div id="sv-err" class="err" role="alert" hidden></div>
+
+      <div class="tablewrap" id="swrap">
+        <table class="ev">
+          <thead><tr>
+            <th>Ora</th><th>Evento</th><th>Utente</th><th>Tipo</th><th>Origine</th><th>Dettagli</th>
+          </tr></thead>
+          <tbody id="srows"></tbody>
+        </table>
+        <div class="none" id="snone" hidden>Nessun evento corrisponde ai filtri.</div>
+        <div class="foot">
+          <span id="scount"></span>
+          <button class="btn" id="s-more" type="button" hidden>Carica altri</button>
+        </div>
+      </div>
+    </div>
   </main>
 </div>
 
 <dialog id="dlg-rename">
   <form method="dialog">
-    <h3>Rinomina firewall</h3>
+    <h3 id="rn-title">Rinomina firewall</h3>
     <input type="text" name="name" maxlength="80" required>
     <div class="row">
       <button class="btn" value="cancel" formnovalidate>Annulla</button>
@@ -304,12 +391,43 @@ dialog .field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 <dialog id="dlg-delete">
   <form method="dialog">
-    <h3>Eliminare il firewall?</h3>
+    <h3 id="del-title">Eliminare il firewall?</h3>
     <p id="del-text"></p>
-    <p class="muted">Se il firewall continua a inviare log ricomparirà nell'elenco, vuoto.</p>
+    <p class="muted" id="del-note"></p>
     <div class="row">
       <button class="btn" value="cancel">Annulla</button>
-      <button class="btn danger-solid" value="ok">Elimina firewall e log</button>
+      <button class="btn danger-solid" value="ok" id="del-ok">Elimina firewall e log</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-addsrv" class="wide">
+  <form method="dialog">
+    <div id="as-step1">
+      <h3>Aggiungi server Windows</h3>
+      <p class="muted">Dai un nome al server. Viene creato un token personale da usare per installare l'agente.</p>
+      <input type="text" name="name" maxlength="80" placeholder="es. DC01 controller di dominio">
+      <p class="err" id="as-err" hidden></p>
+      <div class="row">
+        <button class="btn" value="cancel" formnovalidate>Annulla</button>
+        <button class="btn primary" value="create">Crea</button>
+      </div>
+    </div>
+    <div id="as-step2" hidden>
+      <h3 id="as-title">Installa l'agente</h3>
+      <ol class="steps">
+        <li>Scarica <a href="/agent/fwlog-agent.ps1" download>fwlog-agent.ps1</a> e copialo sul server.</li>
+        <li>Indirizzo di fwlog raggiungibile dal server:
+          <input type="text" id="as-url" spellcheck="false" aria-label="Indirizzo di fwlog"></li>
+        <li>Sul server apri PowerShell <b>come amministratore</b> nella cartella del file ed esegui:
+          <pre class="cmd" id="as-cmd"></pre>
+          <button class="btn" type="button" id="as-copy">Copia comando</button> <span class="muted" id="as-copied"></span></li>
+        <li>Entro un minuto il server diventa verde nella barra laterale.</li>
+      </ol>
+      <p class="warn-box">Il token si vede solo adesso. Se lo perdi, genera un nuovo token dalla pagina del server e ripeti il comando.</p>
+      <div class="row">
+        <button class="btn primary" value="close">Fatto</button>
+      </div>
     </div>
   </form>
 </dialog>
@@ -328,7 +446,21 @@ const st = {
   fws: [], loaded: false, now: Date.now(), stats: null,
   sel: null, rows: [], more: false, filters: {},
   live: false, polling: false, seq: 0, hidden: new Set(),
+  srvs: [], srvLoaded: false, pin: null, srvRetention: 365,
 };
+// server Windows selezionato e i suoi eventi
+const sv = { sel: null, rows: [], more: false, filters: {}, seq: 0, live: false, polling: false, hidden: new Set() };
+
+const KIND = {
+  logon: "Accesso", logon_fail: "Accesso fallito", logoff: "Disconnessione",
+  explicit: "Credenziali esplicite", rdp_reconnect: "RDP riconnesso", rdp_disconnect: "RDP scollegato",
+  lockout: "Account bloccato", unlock: "Account sbloccato", password_change: "Cambio password",
+  password_reset: "Reset password", account_enabled: "Account abilitato", account_disabled: "Account disabilitato",
+  account_deleted: "Account eliminato", group_add: "Aggiunto a gruppo", group_remove: "Rimosso da gruppo",
+  log_cleared: "Registro cancellato", audit_policy: "Criteri di controllo modificati",
+};
+const LOGON_T = { 2: "Locale", 3: "Rete", 7: "Sblocco", 8: "Rete (testo in chiaro)", 9: "Nuove credenziali",
+  10: "RDP", 11: "Locale (cache)", 12: "RDP (cache)", 13: "Sblocco (cache)" };
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -375,10 +507,13 @@ function fmtBytes(b) {
 
 async function loadFirewalls() {
   try {
-    const d = await api("/api/firewalls");
+    const [d, s] = await Promise.all([api("/api/firewalls"), api("/api/servers")]);
     for (const id of [...st.hidden]) if (!d.firewalls.some((f) => f.id === id)) st.hidden.delete(id);
     st.fws = d.firewalls.filter((f) => !st.hidden.has(f.id));
     st.now = d.now; st.stats = d.stats; st.loaded = true;
+    for (const id of [...sv.hidden]) if (!s.servers.some((x) => x.id === id)) sv.hidden.delete(id);
+    st.srvs = s.servers.filter((x) => !sv.hidden.has(x.id));
+    st.pin = s.pin; st.srvRetention = s.retention_days; st.srvLoaded = true;
     $("#side-msg").hidden = true;
   } catch (e) {
     $("#side-msg").textContent = "Server non raggiungibile: " + e.message;
@@ -389,6 +524,17 @@ async function loadFirewalls() {
 }
 
 function selectedFw() { return st.fws.find((f) => f.id === st.sel) || null; }
+function selectedSrv() { return st.srvs.find((s) => s.id === sv.sel) || null; }
+
+// stato dell'agente di un server: verde < 3 min, ambra < 15 min, poi rosso
+// (un agente muto puo' voler dire server spento o agente disattivato)
+function srvHealth(s) {
+  if (s.last_seen == null) return { cls: "", title: "In attesa del primo contatto dell'agente" };
+  const age = st.now - s.last_seen;
+  if (age < 180e3) return { cls: " ok", title: "Agente attivo" };
+  if (age < 900e3) return { cls: " warn", title: "Nessun contatto da qualche minuto" };
+  return { cls: " bad", title: "L'agente non contatta fwlog da " + fmtAgo(age).replace(" fa", "") };
+}
 
 function renderSidebar() {
   const ul = $("#fwlist");
@@ -408,10 +554,32 @@ function renderSidebar() {
     li.append(b);
     ul.append(li);
   }
-  if (st.loaded && !st.fws.length && $("#side-msg").hidden) {
-    $("#side-msg").textContent = "Nessun firewall ancora. Configura i firewall per inviare syslog a questo server sulla porta 514 (UDP o TCP).";
-    $("#side-msg").hidden = false;
+  $("#fw-empty").hidden = !(st.loaded && !st.fws.length);
+
+  const sl = $("#srvlist");
+  sl.replaceChildren();
+  for (const s of st.srvs) {
+    const h = srvHealth(s), li = el("li"), b = el("button");
+    b.type = "button";
+    b.setAttribute("aria-current", s.id === sv.sel ? "true" : "false");
+    const dot = el("span", "dot" + h.cls);
+    dot.title = h.title;
+    const name = el("span", "fw-name", s.name);
+    if (s.is_dc) name.append(el("span", "tag", "DC"));
+    let right;
+    if (s.critical_24h) { right = el("span", "fw-rate crit", nf.format(s.critical_24h) + " critici"); right.title = "Eventi critici nelle ultime 24 ore"; }
+    else if (s.fail_24h) { right = el("span", "fw-rate bad", nf.format(s.fail_24h) + " falliti"); right.title = "Accessi falliti nelle ultime 24 ore"; }
+    else right = el("span", "fw-rate", "");
+    const sub = el("span", "fw-sub");
+    sub.append(el("span", "mono", s.hostname || s.ip || "—"),
+      el("span", null, s.last_seen == null ? "mai contattato" : fmtAgo(st.now - s.last_seen)));
+    b.append(dot, name, right, sub);
+    b.title = s.name + (s.hostname ? " (" + s.hostname + ")" : "");
+    b.addEventListener("click", () => { location.hash = "srv-" + s.id; });
+    li.append(b);
+    sl.append(li);
   }
+  $("#srv-empty").hidden = !(st.srvLoaded && !st.srvs.length);
   const foot = $("#side-foot");
   foot.replaceChildren();
   const s = st.stats;
@@ -431,15 +599,20 @@ function renderSidebar() {
 /* ---------------- area principale ---------------- */
 
 function renderMain() {
-  const f = selectedFw();
+  const f = selectedFw(), s = selectedSrv();
   const show = st.sel != null && (f || !st.loaded);
+  const showS = sv.sel != null && (s || !st.srvLoaded);
   $("#view").hidden = !show;
-  $("#empty").hidden = show;
+  $("#sview").hidden = !showS;
+  $("#empty").hidden = show || showS;
   if (st.sel != null && st.loaded && !f) {
     $("#empty-text").textContent = "Il firewall selezionato non esiste più. Scegline un altro dalla barra laterale.";
+  } else if (sv.sel != null && st.srvLoaded && !s) {
+    $("#empty-text").textContent = "Il server selezionato non esiste più. Scegline un altro dalla barra laterale.";
   } else {
-    $("#empty-text").textContent = "Seleziona un firewall nella barra laterale per vederne i log.";
+    $("#empty-text").textContent = "Seleziona un firewall o un server Windows nella barra laterale.";
   }
+  if (s) renderServer(s);
   if (!f) return;
   $("#fw-name").textContent = f.name;
   $("#fw-ip").textContent = f.ip;
@@ -462,22 +635,36 @@ function retentionText(f) {
 }
 
 function onHash() {
-  const m = /^#fw-(\d+)$/.exec(location.hash);
-  const id = m ? Number(m[1]) : null;
-  if (id === st.sel) return;
-  st.sel = id;
-  st.wasDeleting = null;
-  clearFilters();
-  st.rows = []; st.more = false;
-  $("#rows").replaceChildren();
-  $("#count").textContent = "";
-  $("#b-more").hidden = true;
-  $("#none").hidden = true;
-  showError(null);
-  if (id == null) document.title = "fwlog";
+  const m = /^#fw-(\d+)$/.exec(location.hash), ms = /^#srv-(\d+)$/.exec(location.hash);
+  const id = m ? Number(m[1]) : null, sid = ms ? Number(ms[1]) : null;
+  if (id === st.sel && sid === sv.sel) return;
+  if (id !== st.sel) {
+    st.sel = id;
+    st.wasDeleting = null;
+    clearFilters();
+    st.rows = []; st.more = false;
+    $("#rows").replaceChildren();
+    $("#count").textContent = "";
+    $("#b-more").hidden = true;
+    $("#none").hidden = true;
+    showError(null);
+  }
+  if (sid !== sv.sel) {
+    sv.sel = sid;
+    sForm.reset();
+    for (const inp of sForm.querySelectorAll("input, select")) inp.classList.remove("on");
+    sv.filters = {}; sv.rows = []; sv.more = false;
+    $("#srows").replaceChildren();
+    $("#scount").textContent = "";
+    $("#s-more").hidden = true;
+    $("#snone").hidden = true;
+    showSrvError(null);
+  }
+  if (id == null && sid == null) document.title = "fwlog";
   renderSidebar();
   renderMain();
   if (id != null) { loadFacets(); loadRows(); }
+  if (sid != null) { loadSrvFacets(); loadSrvRows(); }
 }
 
 function showError(msg) {
@@ -489,10 +676,10 @@ function showError(msg) {
 
 const form = $("#filters");
 
-function readFilters() {
+function readFilters(fm) {
   const f = {};
-  for (const inp of form.querySelectorAll("input[name]")) {
-    const v = inp.value.trim();
+  for (const inp of (fm || form).querySelectorAll("input[name], select[name]")) {
+    const v = inp.type === "checkbox" ? (inp.checked ? inp.value : "") : inp.value.trim();
     inp.classList.toggle("on", !!v);
     if (!v) continue;
     if (inp.type === "datetime-local") {
@@ -712,25 +899,33 @@ $("#b-csv").addEventListener("click", () => {
   location.href = "/api/logs.csv?" + query();
 });
 
+// le finestre Rinomina, Conservazione ed Elimina valgono per firewall e server:
+// ctx = { url, name, err (funzione che mostra l'errore), ... }
+let dlgCtx = null;
+const fwCtx = () => { const f = selectedFw(); return f && { url: "/api/firewalls/" + f.id, item: f, kind: "firewall", err: showError, def: st.stats ? st.stats.retention_days : 90 }; };
+const srvCtx = () => { const s = selectedSrv(); return s && { url: "/api/servers/" + s.id, item: s, kind: "server", err: showSrvError, def: st.srvRetention }; };
+const postJson = (url, obj) => api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) });
+
 const dlgRename = $("#dlg-rename");
-$("#b-rename").addEventListener("click", () => {
-  const f = selectedFw();
-  if (!f) return;
-  dlgRename.querySelector("input").value = f.name;
+function openRename(ctx) {
+  if (!ctx) return;
+  dlgCtx = ctx;
+  $("#rn-title").textContent = "Rinomina " + ctx.kind;
+  dlgRename.querySelector("input").value = ctx.item.name;
   dlgRename.returnValue = "";
   dlgRename.showModal();
   dlgRename.querySelector("input").select();
-});
+}
+$("#b-rename").addEventListener("click", () => openRename(fwCtx()));
 dlgRename.addEventListener("close", async () => {
-  if (dlgRename.returnValue !== "ok") return;
+  const ctx = dlgCtx;
+  if (dlgRename.returnValue !== "ok" || !ctx) return;
   const name = dlgRename.querySelector("input").value.trim();
-  if (!name || st.sel == null) return;
+  if (!name) return;
   try {
-    await api("/api/firewalls/" + st.sel, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
-    });
+    await postJson(ctx.url, { name });
     await loadFirewalls();
-  } catch (e) { showError(e.message); }
+  } catch (e) { ctx.err(e.message); }
 });
 
 const dlgRet = $("#dlg-retention"), retSel = dlgRet.querySelector("select"), retDays = dlgRet.querySelector("input[name=days]");
@@ -739,12 +934,14 @@ retSel.addEventListener("change", () => {
   retDays.required = retSel.value === "custom";
   if (retSel.value === "custom") retDays.focus();
 });
-$("#b-retention").addEventListener("click", () => {
-  const f = selectedFw();
-  if (!f) return;
-  const def = st.stats ? st.stats.retention_days : 90;
-  retSel.options[0].textContent = "Predefinita (" + daysText(def) + ")";
-  $("#ret-text").textContent = "Per quanto tempo tenere i log di «" + f.name + "».";
+function openRetention(ctx) {
+  if (!ctx) return;
+  dlgCtx = ctx;
+  const f = ctx.item;
+  retSel.options[0].textContent = "Predefinita (" + daysText(ctx.def) + ")";
+  $("#ret-text").textContent = ctx.kind === "server"
+    ? "Per quanto tempo tenere gli accessi registrati su «" + f.name + "». Per gli amministratori di sistema il Garante privacy chiede almeno 6 mesi."
+    : "Per quanto tempo tenere i log di «" + f.name + "».";
   const r = f.retention_days;
   const preset = r == null ? "" : [...retSel.options].some((o) => o.value === String(r)) ? String(r) : "custom";
   retSel.value = preset;
@@ -753,17 +950,17 @@ $("#b-retention").addEventListener("click", () => {
   dlgRet.returnValue = "";
   dlgRet.showModal();
   retSel.focus();
-});
+}
+$("#b-retention").addEventListener("click", () => openRetention(fwCtx()));
 dlgRet.addEventListener("close", async () => {
-  if (dlgRet.returnValue !== "ok" || st.sel == null) return;
+  const ctx = dlgCtx;
+  if (dlgRet.returnValue !== "ok" || !ctx) return;
   const v = retSel.value;
   const retention_days = v === "" ? null : v === "custom" ? Number(retDays.value) : Number(v);
   try {
-    await api("/api/firewalls/" + st.sel, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ retention_days }),
-    });
+    await postJson(ctx.url, { retention_days });
     await loadFirewalls();
-  } catch (e) { showError(e.message); }
+  } catch (e) { ctx.err(e.message); }
 });
 
 const FILTER_LABELS = { ip: "IP", src: "Sorgente", dst: "Destinazione", port: "Porta", dport: "Porta dst",
@@ -842,26 +1039,42 @@ dlgDel.addEventListener("close", async () => {
   } catch (e) { showError(e.message); }
 });
 
+// conferma generica: ctx = { title, text, note, ok, danger, run (azione asincrona), err }
 const dlgDelete = $("#dlg-delete");
+function openConfirm(ctx) {
+  dlgCtx = ctx;
+  $("#del-title").textContent = ctx.title;
+  $("#del-text").textContent = ctx.text;
+  $("#del-note").textContent = ctx.note || "";
+  $("#del-note").hidden = !ctx.note;
+  const ok = $("#del-ok");
+  ok.textContent = ctx.ok;
+  ok.className = "btn " + (ctx.danger === false ? "primary" : "danger-solid");
+  dlgDelete.returnValue = "";
+  dlgDelete.showModal();
+}
+dlgDelete.addEventListener("close", async () => {
+  const ctx = dlgCtx;
+  if (dlgDelete.returnValue !== "ok" || !ctx || !ctx.run) return;
+  try { await ctx.run(); } catch (e) { ctx.err(e.message); }
+});
 $("#b-delete").addEventListener("click", () => {
   const f = selectedFw();
   if (!f) return;
-  $("#del-text").textContent = "Verranno eliminati «" + f.name + "» (" + f.ip + ") e tutti i suoi " +
-    nf.format(f.total) + " log. L'operazione non si può annullare.";
-  dlgDelete.returnValue = "";
-  dlgDelete.showModal();
-});
-dlgDelete.addEventListener("close", async () => {
-  if (dlgDelete.returnValue !== "ok" || st.sel == null) return;
-  const id = st.sel;
-  try {
-    await api("/api/firewalls/" + id, { method: "DELETE" });
-    st.hidden.add(id);
-    st.fws = st.fws.filter((f) => f.id !== id);
-    st.live = false;
-    $("#b-live").setAttribute("aria-pressed", "false");
-    location.hash = "";
-  } catch (e) { showError(e.message); }
+  const id = f.id;
+  openConfirm({
+    title: "Eliminare il firewall?", ok: "Elimina firewall e log", err: showError,
+    text: "Verranno eliminati «" + f.name + "» (" + f.ip + ") e tutti i suoi " + nf.format(f.total) + " log. L'operazione non si può annullare.",
+    note: "Se il firewall continua a inviare log ricomparirà nell'elenco, vuoto.",
+    run: async () => {
+      await api("/api/firewalls/" + id, { method: "DELETE" });
+      st.hidden.add(id);
+      st.fws = st.fws.filter((x) => x.id !== id);
+      st.live = false;
+      $("#b-live").setAttribute("aria-pressed", "false");
+      location.hash = "";
+    },
+  });
 });
 
 /* ---------------- ricerca firewall ---------------- */
@@ -877,9 +1090,21 @@ function marked(text, q) {
   return span;
 }
 
+function searchItems() {
+  const items = st.fws.map((f) => {
+    const age = f.last_seen == null ? null : st.now - f.last_seen;
+    return { hash: "fw-" + f.id, name: f.name, ip: f.ip,
+      dot: age != null && age < 120e3 ? " ok" : age != null && age < 900e3 ? " warn" : "" };
+  });
+  for (const s of st.srvs) {
+    items.push({ hash: "srv-" + s.id, name: s.name, ip: s.hostname || s.ip || "server Windows", dot: srvHealth(s).cls });
+  }
+  return items;
+}
+
 function searchMatches(q) {
   const out = [];
-  for (const f of st.fws) {
+  for (const f of searchItems()) {
     const n = f.name.toLowerCase(), ip = f.ip.toLowerCase();
     const rank = n.startsWith(q) || ip.startsWith(q) ? 0 : n.includes(q) || ip.includes(q) ? 1 : -1;
     if (rank >= 0) out.push([rank, f]);
@@ -894,14 +1119,13 @@ function renderSearch() {
   sItems = searchMatches(q);
   sIdx = Math.min(sIdx, Math.max(0, sItems.length - 1));
   sRes.replaceChildren();
-  if (!sItems.length) sRes.append(el("li", "none", "Nessun firewall trovato"));
+  if (!sItems.length) sRes.append(el("li", "none", "Nessun firewall o server trovato"));
   sItems.forEach((f, i) => {
     const li = el("li");
     li.id = "sr-" + i;
     li.setAttribute("role", "option");
     li.setAttribute("aria-selected", String(i === sIdx));
-    const age = f.last_seen == null ? null : st.now - f.last_seen;
-    const dot = el("span", "dot" + (age != null && age < 120e3 ? " ok" : age != null && age < 900e3 ? " warn" : ""));
+    const dot = el("span", "dot" + f.dot);
     const name = marked(f.name, q); name.className = "fw-name";
     const ip = marked(f.ip, q); ip.className = "ip mono";
     li.append(dot, name, ip);
@@ -935,7 +1159,7 @@ function pickSearch(i) {
   sInput.value = "";
   closeSearch();
   sInput.blur();
-  location.hash = "fw-" + f.id;
+  location.hash = f.hash;
 }
 
 sInput.addEventListener("input", () => { sIdx = 0; renderSearch(); });
@@ -963,6 +1187,350 @@ document.addEventListener("keydown", (e) => {
   sInput.focus();
 });
 
+/* ---------------- server Windows ---------------- */
+
+const sForm = $("#sfilters");
+const addOpt = (sel, value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; sel.append(o); };
+for (const [k, v] of Object.entries(KIND)) addOpt($("#sf-kind"), k, v);
+for (const [k, v] of Object.entries(LOGON_T)) addOpt($("#sf-lt"), k, v);
+
+function showSrvError(msg) {
+  $("#sv-err").textContent = msg || "";
+  $("#sv-err").hidden = !msg;
+}
+
+function renderServer(s) {
+  $("#sv-name").textContent = s.name;
+  const parts = [];
+  if (s.hostname) parts.push(s.hostname);
+  if (s.domain) parts.push("dominio " + s.domain);
+  if (s.is_dc) parts.push("controller di dominio");
+  if (s.os) parts.push(s.os);
+  parts.push(nf.format(s.total) + " eventi");
+  parts.push("conservazione " + (s.retention_days == null ? daysText(st.srvRetention) + " (predefinita)" : daysText(s.retention_days)));
+  if (s.status && s.status.admins) parts.push(nf.format(s.status.admins) + " account admin monitorati");
+  parts.push(s.last_seen == null ? "mai contattato" : "ultimo contatto " + fmtAgo(st.now - s.last_seen));
+  $("#sv-info").textContent = parts.join(" · ");
+  renderSrvWarns(s);
+  document.title = s.name + " · fwlog";
+}
+
+function renderSrvWarns(s) {
+  const box = $("#sv-warns"), stt = s.status || {};
+  box.replaceChildren();
+  const add = (text, bad) => box.append(el("p", "warn-box" + (bad ? " bad" : ""), text));
+  if (s.last_seen == null) {
+    add("L'agente non ha ancora contattato fwlog. Installalo sul server con il comando mostrato alla creazione; se non lo hai più, genera un nuovo token.");
+  } else if (st.now - s.last_seen > 900e3) {
+    add("L'agente non contatta fwlog da " + fmtAgo(st.now - s.last_seen).replace(" fa", "") +
+      ": il server potrebbe essere spento o irraggiungibile, oppure l'agente è stato disattivato. " +
+      "Gli eventi restano nel registro di Windows e arrivano alla ripresa.", true);
+  }
+  if (stt.audit_missing && stt.audit_missing.length) {
+    add("Criteri di controllo non attivi su Windows: " + stt.audit_missing.join(", ") +
+      ". Windows non registra i relativi eventi: riesegui l'installazione dell'agente o correggi la GPO.");
+  }
+  if (stt.log_mb && stt.log_mb < 128) {
+    add("Il registro Security è di soli " + stt.log_mb + " MB: se fwlog resta irraggiungibile a lungo alcuni eventi possono andare persi.");
+  }
+  if (stt.gap_at && st.now - stt.gap_at < 7 * 86400e3) {
+    add("Il " + new Date(stt.gap_at).toLocaleString("it-IT") + " l'agente non ha potuto leggere tutti gli eventi " +
+      "(registro sovrascritto o troppi eventi insieme): potrebbero mancare degli accessi.", true);
+  }
+  if (stt.err) add("Avviso dell'agente: " + stt.err);
+}
+
+function squery(extra) {
+  const p = new URLSearchParams();
+  p.set("srv", sv.sel);
+  for (const [k, v] of Object.entries(sv.filters)) p.set(k, v);
+  for (const [k, v] of Object.entries(extra || {})) p.set(k, v);
+  return p.toString();
+}
+
+async function loadSrvFacets() {
+  const id = sv.sel;
+  try {
+    const d = await api("/api/events/facets?srv=" + id);
+    if (id !== sv.sel) return;
+    for (const k of ["user", "host"]) {
+      $("#dl-" + k).replaceChildren(...(d[k] || []).map((v) => { const o = document.createElement("option"); o.value = v; return o; }));
+    }
+  } catch (_) { /* i suggerimenti sono facoltativi */ }
+}
+
+function evDetails(r) {
+  const parts = [];
+  if (r.kind === "group_add") parts.push("in " + (r.target || "?"));
+  else if (r.kind === "group_remove") parts.push("da " + (r.target || "?"));
+  else if (r.kind === "explicit" && r.target) parts.push("verso " + r.target);
+  else if (r.kind === "audit_policy" && r.target) parts.push(r.target);
+  if (r.reason) parts.push(r.reason);
+  if (r.actor) parts.push("eseguito da " + r.actor);
+  if (r.auth && !r.logon_type && r.kind === "logon_fail") parts.push(r.auth);
+  return parts.join(" · ");
+}
+
+function evRow(r) {
+  const tr = el("tr", "r " + (r.critical ? "a-crit" : r.outcome === "ok" ? "a-allow" : r.outcome === "fail" ? "a-deny" : ""));
+  tr._ev = r;
+  const td = () => tr.appendChild(el("td"));
+  const t = td(); t.className = "mono"; t.textContent = fmtTime(r.ts); t.title = fmtFull(r.ts);
+  const k = td();
+  k.append(vbtn("kind", r.kind, KIND[r.kind] || r.kind,
+    "badge " + (r.critical ? "crit" : r.outcome === "ok" ? "allow" : r.outcome === "fail" ? "deny" : "")));
+  const u = td();
+  if (r.account) {
+    if (r.domain) u.append(el("span", "muted", r.domain + "\\"));
+    u.append(vbtn("user", r.account));
+    if (r.elevated) { const tg = el("span", "tag admin", "admin"); tg.title = "Accesso con privilegi di amministratore"; u.append(tg); }
+  } else { u.textContent = "—"; u.className = "muted"; }
+  const lt = td();
+  if (r.logon_type != null) lt.append(vbtn("logon_type", String(r.logon_type), LOGON_T[r.logon_type] || "Tipo " + r.logon_type));
+  else if (r.auth) { lt.textContent = r.auth; lt.className = "muted"; }
+  const o = td(); o.className = "mono";
+  if (r.src_ip) o.append(vbtn("ip", r.src_ip));
+  if (r.src_ip && r.src_host) o.append(" ");
+  if (r.src_host) o.append(vbtn("host", r.src_host, r.src_ip ? "(" + r.src_host + ")" : r.src_host));
+  if (!r.src_ip && !r.src_host) { o.textContent = "—"; o.classList.add("muted"); }
+  const det = td(); det.className = "msg"; det.textContent = evDetails(r);
+  return tr;
+}
+
+function evDetailEl(r) {
+  const tr = el("tr", "detail"), td = el("td");
+  td.colSpan = 6;
+  const kv = el("div", "kv");
+  const item = (k, v) => { if (v == null || v === "") return; const s = el("span", null, k + " "); s.append(el("b", null, v)); kv.append(s); };
+  item("Ora evento", fmtFull(r.ts));
+  item("Ricevuto", fmtFull(r.rx));
+  item("ID evento", r.event_id);
+  item("Autenticazione", r.auth);
+  item("Logon ID", r.logon_id);
+  item("Eseguito da", r.actor);
+  item("Destinazione", r.target);
+  item("Motivo", r.reason);
+  let lines = "";
+  try {
+    const d = JSON.parse(r.data || "{}");
+    lines = Object.keys(d).map((k) => k + ": " + d[k]).join("\n");
+  } catch (_) { lines = r.data || ""; }
+  td.append(kv, el("pre", "raw", lines));
+  tr.append(td);
+  return tr;
+}
+
+$("#srows").addEventListener("click", (e) => {
+  const b = e.target.closest("button.v");
+  if (b) { e.stopPropagation(); setSFilter(b.dataset.f, b.dataset.v, e.altKey); return; }
+  const tr = e.target.closest("tr.r");
+  if (!tr || String(window.getSelection())) return;
+  if (tr._det) { tr._det.remove(); tr._det = null; }
+  else { tr._det = evDetailEl(tr._ev); tr.after(tr._det); }
+});
+
+function setSFilter(name, value, exclude) {
+  const inp = sForm.elements[name];
+  if (!inp) return;
+  if (inp.tagName === "SELECT") {
+    if (exclude) return;        // le liste non hanno l'esclusione
+    inp.value = value;
+  } else {
+    inp.value = (exclude ? "!" : "") + value;
+  }
+  applySFilters();
+}
+
+function applySFilters() {
+  sv.filters = readFilters(sForm);
+  loadSrvRows();
+}
+
+sForm.addEventListener("submit", (e) => { e.preventDefault(); applySFilters(); });
+sForm.addEventListener("change", (e) => { if (e.target.tagName === "SELECT" || e.target.type === "checkbox") applySFilters(); });
+$("#sb-reset").addEventListener("click", () => {
+  sForm.reset();
+  for (const inp of sForm.querySelectorAll("input, select")) inp.classList.remove("on");
+  sv.filters = {};
+  loadSrvRows();
+});
+
+function updateSFoot() {
+  const n = sv.rows.length;
+  $("#snone").hidden = n > 0;
+  const nflt = Object.keys(sv.filters).length;
+  $("#scount").textContent = n ? nf.format(n) + (n === 1 ? " evento" : " eventi") + (nflt ? " · " + nflt + (nflt === 1 ? " filtro attivo" : " filtri attivi") : "") : "";
+  $("#s-more").hidden = !sv.more;
+}
+
+function appendSRows(rows, newAfter) {
+  const frag = document.createDocumentFragment();
+  for (const r of rows) {
+    const tr = evRow(r);
+    if (newAfter != null && r.id > newAfter) tr.classList.add("new");
+    frag.append(tr);
+  }
+  $("#srows").append(frag);
+}
+
+async function loadSrvRows(newAfter) {
+  if (sv.sel == null) return;
+  const seq = ++sv.seq;
+  $("#scount").textContent = "Caricamento…";
+  try {
+    const d = await api("/api/events?" + squery({ limit: LIMIT }));
+    if (seq !== sv.seq) return;
+    showSrvError(null);
+    sv.rows = d.rows; sv.more = d.more;
+    $("#srows").replaceChildren();
+    appendSRows(d.rows, newAfter);
+    if (newAfter == null) $("#swrap").scrollTop = 0;
+  } catch (e) {
+    if (seq !== sv.seq) return;
+    showSrvError(e.message);
+    sv.rows = []; sv.more = false;
+    $("#srows").replaceChildren();
+  }
+  updateSFoot();
+}
+
+$("#s-more").addEventListener("click", async () => {
+  const last = sv.rows[sv.rows.length - 1];
+  if (!last) return;
+  const seq = sv.seq, btn = $("#s-more");
+  btn.disabled = true;
+  try {
+    const d = await api("/api/events?" + squery({ limit: LIMIT, bts: last.ts, bid: last.id }));
+    if (seq !== sv.seq) return;
+    sv.rows = sv.rows.concat(d.rows); sv.more = d.more;
+    appendSRows(d.rows);
+  } catch (e) { showSrvError(e.message); }
+  finally { btn.disabled = false; updateSFoot(); }
+});
+
+// live: gli eventi possono arrivare in ritardo (agente che recupera), quindi a ogni
+// novita' la tabella viene ricaricata in ordine di ora dell'evento
+async function spoll() {
+  if (!sv.live || sv.sel == null || document.hidden || sv.polling) return;
+  sv.polling = true;
+  try {
+    const maxId = sv.rows.reduce((m, r) => Math.max(m, r.id), 0);
+    const d = await api("/api/events?" + squery({ limit: 1, after: maxId }));
+    if (d.rows.length && sv.live) await loadSrvRows(maxId);
+  } catch (e) { showSrvError("Live: " + e.message); }
+  finally { sv.polling = false; }
+}
+
+$("#sv-live").addEventListener("click", () => {
+  sv.live = !sv.live;
+  $("#sv-live").setAttribute("aria-pressed", String(sv.live));
+  if (sv.live) spoll();
+});
+$("#sv-csv").addEventListener("click", () => { if (sv.sel != null) location.href = "/api/events.csv?" + squery(); });
+$("#sv-rename").addEventListener("click", () => openRename(srvCtx()));
+$("#sv-retention").addEventListener("click", () => openRetention(srvCtx()));
+$("#sv-delete").addEventListener("click", () => {
+  const s = selectedSrv();
+  if (!s) return;
+  const id = s.id;
+  openConfirm({
+    title: "Eliminare il server?", ok: "Elimina server ed eventi", err: showSrvError,
+    text: "Verranno eliminati «" + s.name + "» e i suoi " + nf.format(s.total) + " eventi registrati. L'operazione non si può annullare.",
+    note: "Il token smette subito di funzionare. Per fermare l'agente, sul server esegui fwlog-agent.ps1 -Uninstall.",
+    run: async () => {
+      await api("/api/servers/" + id, { method: "DELETE" });
+      sv.hidden.add(id);
+      st.srvs = st.srvs.filter((x) => x.id !== id);
+      sv.live = false;
+      $("#sv-live").setAttribute("aria-pressed", "false");
+      location.hash = "";
+    },
+  });
+});
+$("#sv-token").addEventListener("click", () => {
+  const s = selectedSrv();
+  if (!s) return;
+  const id = s.id, name = s.name;
+  openConfirm({
+    title: "Generare un nuovo token?", ok: "Genera nuovo token", danger: false, err: showSrvError,
+    text: "Il token attuale di «" + name + "» smette subito di funzionare.",
+    note: "Sul server andrà rieseguita l'installazione dell'agente con il nuovo comando (gli eventi non ancora inviati non vanno persi).",
+    run: async () => {
+      const d = await postJson("/api/servers/" + id, { new_token: true });
+      showInstall(name, d.token, d.pin);
+    },
+  });
+});
+
+/* ---------------- aggiunta di un server ---------------- */
+
+const dlgAdd = $("#dlg-addsrv"), addForm = dlgAdd.querySelector("form");
+let asData = null;
+
+function asError(msg) {
+  $("#as-err").textContent = msg || "";
+  $("#as-err").hidden = !msg;
+}
+
+$("#b-addsrv").addEventListener("click", () => {
+  $("#as-step1").hidden = false;
+  $("#as-step2").hidden = true;
+  addForm.elements.name.value = "";
+  asError(null);
+  dlgAdd.returnValue = "";
+  dlgAdd.showModal();
+  addForm.elements.name.focus();
+});
+
+async function createSrv() {
+  const name = addForm.elements.name.value.trim();
+  if (!name) { asError("Indica il nome del server."); return; }
+  try {
+    const d = await postJson("/api/servers", { name });
+    await loadFirewalls();
+    location.hash = "srv-" + d.id;
+    showInstall(name, d.token, d.pin);
+  } catch (e) { asError(e.message); }
+}
+
+addForm.addEventListener("submit", (e) => {
+  if ($("#as-step2").hidden && (!e.submitter || e.submitter.value === "create")) { e.preventDefault(); createSrv(); }
+});
+addForm.elements.name.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); createSrv(); }
+});
+
+function showInstall(name, token, pin) {
+  asData = { token, pin };
+  $("#as-step1").hidden = true;
+  $("#as-step2").hidden = false;
+  $("#as-title").textContent = "Installa l'agente su «" + name + "»";
+  $("#as-url").value = location.origin;
+  $("#as-copied").textContent = "";
+  updateCmd();
+  if (!dlgAdd.open) { dlgAdd.returnValue = ""; dlgAdd.showModal(); }
+}
+
+function updateCmd() {
+  if (!asData) return;
+  const url = $("#as-url").value.trim().replace(/\/+$/, "");
+  let cmd = "powershell -ExecutionPolicy Bypass -File .\\fwlog-agent.ps1 -Install -Url " + url + " -Token " + asData.token;
+  if (asData.pin) cmd += " -Pin " + asData.pin;
+  $("#as-cmd").textContent = cmd;
+}
+$("#as-url").addEventListener("input", updateCmd);
+$("#as-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("#as-cmd").textContent);
+    $("#as-copied").textContent = "Copiato.";
+  } catch (_) {
+    getSelection().selectAllChildren($("#as-cmd"));
+    $("#as-copied").textContent = "Premi Ctrl+C per copiare il testo selezionato.";
+  }
+});
+// il token non resta nella pagina dopo la chiusura
+dlgAdd.addEventListener("close", () => { asData = null; $("#as-cmd").textContent = ""; });
+
 /* ---------------- avvio ---------------- */
 
 window.addEventListener("hashchange", onHash);
@@ -970,6 +1538,7 @@ onHash();
 loadFirewalls();
 setInterval(loadFirewalls, SIDEBAR_MS);
 setInterval(poll, LIVE_MS);
+setInterval(spoll, LIVE_MS);
 </script>
 </body>
 </html>

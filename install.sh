@@ -60,6 +60,9 @@ info "Copio il programma in $APP"
 install -d -o root -g root -m 0755 "$APP" "$APP/static"
 install -o root -g root -m 0755 "$SRC/fwlog.py" "$APP/fwlog.py"
 install -o root -g root -m 0644 "$SRC/static/index.html" "$APP/static/index.html"
+# agente per i server Windows, scaricabile dalla dashboard
+install -d -o root -g root -m 0755 "$APP/agent"
+install -o root -g root -m 0644 "$SRC/agent/fwlog-agent.ps1" "$APP/agent/fwlog-agent.ps1"
 for f in README.md test-sender.py; do
     [ -f "$SRC/$f" ] && install -o root -g root -m 0644 "$SRC/$f" "$APP/$f"
 done
@@ -107,6 +110,8 @@ FWLOG_TLS_CERT=$ETC/tls.crt
 FWLOG_TLS_KEY=$ETC/tls.key
 # giorni di conservazione dei log, 0 = senza limite (vale comunque FWLOG_MIN_FREE_GB)
 FWLOG_RETENTION_DAYS=90
+# giorni di conservazione degli accessi admin dei server Windows (Garante privacy: almeno 180)
+FWLOG_WIN_RETENTION_DAYS=365
 # sotto questo spazio libero (GB) vengono eliminati i log piu' vecchi
 FWLOG_MIN_FREE_GB=2
 # IP o subnet ammessi a inviare log, separati da virgola; vuoto = tutti
@@ -167,6 +172,7 @@ else
 fi
 echo "    Il certificato e' autofirmato: il browser mostrera' un avviso al primo accesso."
 echo "    Firewall: inviare syslog a questo server su UDP o TCP 514."
+echo "    Server Windows: dashboard > Server Windows > Aggiungi (i server usano la porta ${PORT:-10443})."
 
 if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q "^Status: active"; then
     echo

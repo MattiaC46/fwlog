@@ -8,12 +8,17 @@ porte, protocollo, azione, interfacce, zone, regola) dai formati piu' comuni
 SonicWall, iptables/UFW/UniFi e in generale qualsiasi log chiave=valore) e li
 salva in SQLite sul disco dati. Serve una dashboard web con filtri.
 
+Riceve inoltre via HTTPS (POST /api/ingest, token per server) gli eventi di
+accesso degli amministratori inviati dall'agente PowerShell dei server Windows
+(agent/fwlog-agent.ps1).
+
 Usa solo la libreria standard di Python 3: nessuna dipendenza da installare.
 Configurazione tramite variabili d'ambiente (vedi /etc/fwlog/fwlog.env).
 """
 
 import base64
 import csv
+import hashlib
 import hmac
 import io
 import ipaddress
@@ -22,6 +27,7 @@ import logging
 import os
 import queue
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -55,7 +61,14 @@ ALLOWED_SOURCES = [ipaddress.ip_network(s.strip(), strict=False)
                    for s in E("FWLOG_ALLOWED_SOURCES", "").split(",") if s.strip()]
 STATIC_DIR = E("FWLOG_STATIC_DIR",
                os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
+AGENT_DIR = E("FWLOG_AGENT_DIR",
+              os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent"))
 QUEUE_MAX = int(E("FWLOG_QUEUE_MAX", "200000"))
+# conservazione predefinita degli accessi admin dei server Windows (il Garante
+# privacy chiede almeno 6 mesi per i log di accesso degli amministratori di sistema)
+WIN_RETENTION_DAYS = int(E("FWLOG_WIN_RETENTION_DAYS", "365"))
+INGEST_MAX = 4 * 1024 * 1024   # dimensione massima di un invio dell'agente
+WIN_MAX_EVENTS = 1000          # eventi massimi per invio
 MAX_RAW = 8192
 MAX_FRAME = 65536      # dimensione massima di un messaggio syslog su TCP
 MAX_TCP_CONN = 500     # connessioni syslog TCP contemporanee
@@ -379,6 +392,211 @@ def parse_fields(body):
     return {}
 
 # --------------------------------------------------------------------------
+# Eventi Windows (accessi degli amministratori)
+# --------------------------------------------------------------------------
+# L'agente sceglie quali eventi inviare (solo account amministratori) e manda i
+# campi EventData cosi' come sono; qui vengono interpretati, cosi' il significato
+# si aggiorna senza reinstallare gli agenti.
+NTSTATUS = {
+    "0xc000006a": "password errata", "0xc0000064": "utente inesistente",
+    "0xc000006f": "fuori dall'orario consentito", "0xc0000070": "workstation non autorizzata",
+    "0xc0000071": "password scaduta", "0xc0000072": "account disabilitato",
+    "0xc0000193": "account scaduto", "0xc0000224": "cambio password obbligatorio",
+    "0xc0000234": "account bloccato", "0xc000015b": "tipo di accesso non consentito",
+    "0xc0000133": "orologio non sincronizzato con il DC", "0xc000006e": "restrizione dell'account",
+    "0xc0000413": "autenticazione non consentita su questo computer",
+    "0xc000005e": "nessun server di accesso disponibile", "0xc0000371": "account locale senza segreto",
+}
+KERBEROS = {
+    "0x6": "utente inesistente", "0x12": "account disabilitato, scaduto o bloccato",
+    "0x17": "password scaduta", "0x18": "password errata", "0x25": "orologio non sincronizzato",
+    "0xc": "restrizione dell'account",
+}
+AUDIT_CHANGES = {"%%8448": "successo rimosso", "%%8449": "successo aggiunto",
+                 "%%8450": "errore rimosso", "%%8451": "errore aggiunto"}
+AUDIT_SUBCAT = {
+    "0cce9215-69ae-11d9-bed3-505054503030": "Accesso",
+    "0cce9216-69ae-11d9-bed3-505054503030": "Disconnessione",
+    "0cce9217-69ae-11d9-bed3-505054503030": "Blocco account",
+    "0cce921b-69ae-11d9-bed3-505054503030": "Accesso speciale",
+    "0cce921c-69ae-11d9-bed3-505054503030": "Altri eventi di accesso/disconnessione",
+    "0cce922f-69ae-11d9-bed3-505054503030": "Modifica dei criteri di controllo",
+    "0cce9235-69ae-11d9-bed3-505054503030": "Gestione account utente",
+    "0cce9237-69ae-11d9-bed3-505054503030": "Gestione gruppi di sicurezza",
+    "0cce923f-69ae-11d9-bed3-505054503030": "Convalida credenziali",
+    "0cce9242-69ae-11d9-bed3-505054503030": "Servizio di autenticazione Kerberos",
+}
+# event_id -> (tipo, esito, critico)
+WIN_EVENTS = {
+    4624: ("logon", "ok", 0), 4625: ("logon_fail", "fail", 0), 4634: ("logoff", None, 0),
+    4647: ("logoff", None, 0), 4648: ("explicit", "ok", 0), 4778: ("rdp_reconnect", "ok", 0),
+    4779: ("rdp_disconnect", None, 0), 4771: ("logon_fail", "fail", 0),
+    4776: ("logon_fail", "fail", 0), 4740: ("lockout", "fail", 0), 4767: ("unlock", None, 0),
+    4723: ("password_change", None, 0), 4724: ("password_reset", None, 0),
+    4722: ("account_enabled", None, 0), 4725: ("account_disabled", None, 0),
+    4726: ("account_deleted", None, 0),
+    4728: ("group_add", None, 1), 4732: ("group_add", None, 1), 4756: ("group_add", None, 1),
+    4729: ("group_remove", None, 0), 4733: ("group_remove", None, 0), 4757: ("group_remove", None, 0),
+    1102: ("log_cleared", None, 1), 4719: ("audit_policy", None, 1),
+}
+RE_CN = re.compile(r"^CN=((?:\\.|[^,])+)", re.I)
+
+
+def _wv(d, k):
+    v = d.get(k)
+    if v is None:
+        return None
+    v = str(v).strip()
+    return None if v in ("", "-") else v
+
+
+def _split_acct(name, domain=None):
+    """'DOM\\utente' o 'utente@dom' -> (utente, dominio)."""
+    if not name:
+        return None, domain
+    if "\\" in name:
+        domain, name = name.split("\\", 1)
+    elif "@" in name:
+        name, domain = name.split("@", 1)
+    return name, domain
+
+
+def _subject(d):
+    n, dom = _wv(d, "SubjectUserName"), _wv(d, "SubjectDomainName")
+    return f"{dom}\\{n}" if n and dom else n
+
+
+def win_fields(eid, d, elev=False):
+    """Campi normalizzati di un evento Windows; None se l'evento non e' gestito."""
+    if eid not in WIN_EVENTS:
+        return None
+    kind, outcome, critical = WIN_EVENTS[eid]
+    r = {"kind": kind, "outcome": outcome, "critical": critical, "elevated": 0,
+         "account": None, "domain": None, "logon_type": None, "src_ip": None, "src_host": None,
+         "actor": None, "target": None, "reason": None, "auth": None, "logon_id": None}
+    lt = _wv(d, "LogonType")
+    r["logon_type"] = int(lt) if lt and lt.isdigit() else None
+    r["src_ip"] = norm_ip(_wv(d, "IpAddress") or _wv(d, "ClientAddress"))
+    r["src_host"] = _wv(d, "WorkstationName") or _wv(d, "Workstation") or _wv(d, "ClientName")
+    r["auth"] = _wv(d, "AuthenticationPackageName") or _wv(d, "PackageName")
+    r["logon_id"] = _wv(d, "TargetLogonId") or _wv(d, "LogonID")
+    if eid in (4778, 4779):
+        r["account"], r["domain"] = _wv(d, "AccountName"), _wv(d, "AccountDomain")
+    elif eid in (4728, 4729, 4732, 4733, 4756, 4757):
+        # account = membro aggiunto/rimosso, target = gruppo
+        m = _wv(d, "_member")
+        if not m:
+            cn = RE_CN.match(_wv(d, "MemberName") or "")
+            m = cn.group(1).replace("\\", "") if cn else _wv(d, "MemberSid")
+        r["account"], r["domain"] = _split_acct(m)
+        g, gd = _wv(d, "TargetUserName"), _wv(d, "TargetDomainName")
+        r["target"] = f"{gd}\\{g}" if g and gd else g
+    elif eid in (1102, 4719):
+        r["account"], r["domain"] = _wv(d, "SubjectUserName"), _wv(d, "SubjectDomainName")
+    else:
+        r["account"], r["domain"] = _split_acct(_wv(d, "TargetUserName"), _wv(d, "TargetDomainName"))
+    if eid in (4648, 4740, 4767, 4723, 4724, 4722, 4725, 4726,
+               4728, 4729, 4732, 4733, 4756, 4757):
+        r["actor"] = _subject(d)
+    if eid == 4648:
+        r["target"] = _wv(d, "TargetServerName")
+    elif eid == 4740:
+        # in 4740 TargetDomainName e' il computer da cui arrivano i tentativi
+        r["src_host"], r["domain"] = _wv(d, "TargetDomainName"), None
+    elif eid == 4625:
+        st, sub = (_wv(d, "Status") or "").lower(), (_wv(d, "SubStatus") or "").lower()
+        r["reason"] = NTSTATUS.get(sub) or NTSTATUS.get(st) or (sub if sub not in ("", "0x0") else st) or None
+    elif eid == 4771:
+        st = (_wv(d, "Status") or "").lower()
+        r["reason"], r["auth"] = KERBEROS.get(st, st or None), "Kerberos"
+    elif eid == 4776:
+        st = (_wv(d, "Status") or "").lower()
+        r["reason"], r["auth"] = NTSTATUS.get(st, st or None), "NTLM"
+    elif eid == 4719:
+        g = (_wv(d, "SubcategoryGuid") or "").strip("{}").lower()
+        r["target"] = AUDIT_SUBCAT.get(g, g or None)
+        ch = [AUDIT_CHANGES.get(c.strip(), c.strip())
+              for c in (_wv(d, "AuditPolicyChanges") or "").split(",") if c.strip()]
+        r["reason"] = ", ".join(ch) or None
+    if eid == 4624:
+        r["elevated"] = 1 if (elev or _wv(d, "ElevatedToken") == "%%1842") else 0
+    for k in ("account", "domain", "src_host", "actor", "target", "reason", "auth", "logon_id"):
+        if r[k]:
+            r[k] = r[k][:128]
+    return r
+
+
+def _str_dict(v):
+    if not isinstance(v, dict):
+        return {}
+    out = {}
+    for k, x in list(v.items())[:80]:
+        if x is not None and not isinstance(x, (dict, list)):
+            out[str(k)[:64]] = str(x)[:1024]
+    return out
+
+
+def win_ingest_rows(srv_id, d, rx):
+    """Valida un invio dell'agente. Restituisce (meta, righe per INSERT_EV)."""
+    evs = d.get("events", [])
+    if not isinstance(evs, list):
+        raise ValueError("events deve essere una lista")
+    if len(evs) > WIN_MAX_EVENTS:
+        raise ValueError(f"troppi eventi in un invio (massimo {WIN_MAX_EVENTS})")
+    meta = {k: (str(d[k])[:200] if d.get(k) is not None else None)
+            for k in ("host", "domain", "os", "ver")}
+    meta["is_dc"] = 1 if d.get("is_dc") is True else 0
+    status = {}
+    for k in ("admins", "log_mb", "gap_total", "gap_at"):
+        if isinstance(d.get(k), (int, float)) and not isinstance(d.get(k), bool):
+            status[k] = int(d[k])
+    if isinstance(d.get("audit_missing"), list):
+        status["audit_missing"] = [str(x)[:80] for x in d["audit_missing"][:20]]
+    if d.get("err"):
+        status["err"] = str(d["err"])[:500]
+    meta["status"] = json.dumps(status, separators=(",", ":"))
+    rows = []
+    for ev in evs:
+        if not isinstance(ev, dict):
+            continue
+        try:
+            rid, eid, ts = int(ev["rid"]), int(ev["eid"]), int(ev["t"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        dd = _str_dict(ev.get("d"))
+        f = win_fields(eid, dd, ev.get("elev") is True)
+        if f is None:
+            continue
+        if ts < 946684800000 or ts > rx + 86400000:   # orologio del server assurdo
+            ts = rx
+        data = json.dumps(dd, separators=(",", ":"), ensure_ascii=False)[:MAX_RAW]
+        src = f["src_ip"]
+        rows.append((ts, rx, srv_id, "Security", rid, eid, f["kind"], f["outcome"], f["critical"],
+                     f["elevated"], f["account"], f["domain"], f["logon_type"], src,
+                     ip_key(src) if src else None, f["src_host"], f["actor"], f["target"],
+                     f["reason"], f["auth"], f["logon_id"], data))
+    return meta, rows
+
+
+def token_hash(tok):
+    return hashlib.sha256(tok.encode()).hexdigest()
+
+
+def cert_pin(path):
+    """SHA-256 del certificato (DER) in esadecimale maiuscolo: l'agente lo
+    confronta con quello presentato dal server (certificato autofirmato)."""
+    try:
+        with open(path) as f:
+            m = re.search(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", f.read(), re.S)
+        return hashlib.sha256(ssl.PEM_cert_to_DER_cert(m.group(0))).hexdigest().upper()
+    except Exception:
+        log.warning("impossibile calcolare l'impronta del certificato %s", path)
+        return None
+
+
+TLS_PIN = None
+
+# --------------------------------------------------------------------------
 # Archivio (SQLite)
 # --------------------------------------------------------------------------
 SCHEMA = """
@@ -395,10 +613,33 @@ CREATE INDEX IF NOT EXISTS ix_logs_fw ON logs(fw_id);
 CREATE INDEX IF NOT EXISTS ix_logs_ts ON logs(ts);
 CREATE INDEX IF NOT EXISTS ix_logs_src ON logs(src_n);
 CREATE INDEX IF NOT EXISTS ix_logs_dst ON logs(dst_n);
+CREATE TABLE IF NOT EXISTS servers(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, token_hash TEXT UNIQUE,
+    created INTEGER, hostname TEXT, domain TEXT, ip TEXT, is_dc INTEGER, os TEXT, agent TEXT,
+    status TEXT, last_seen INTEGER, last_event INTEGER, total INTEGER NOT NULL DEFAULT 0,
+    retention_days INTEGER);
+CREATE TABLE IF NOT EXISTS events(
+    id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, rx INTEGER NOT NULL, srv_id INTEGER NOT NULL,
+    chan TEXT NOT NULL, record_id INTEGER NOT NULL, event_id INTEGER NOT NULL,
+    kind TEXT, outcome TEXT, critical INTEGER NOT NULL DEFAULT 0,
+    elevated INTEGER NOT NULL DEFAULT 0, account TEXT, domain TEXT, logon_type INTEGER,
+    src_ip TEXT, src_n TEXT, src_host TEXT, actor TEXT, target TEXT, reason TEXT,
+    auth TEXT, logon_id TEXT, data TEXT,
+    UNIQUE(srv_id, chan, record_id));
+CREATE INDEX IF NOT EXISTS ix_events_srv_ts ON events(srv_id, ts);
+CREATE INDEX IF NOT EXISTS ix_events_src ON events(src_n);
+CREATE INDEX IF NOT EXISTS ix_events_account ON events(account COLLATE NOCASE);
 """
 INSERT = ("INSERT INTO logs(ts,fw_id,sev,host,prog,action,proto,src,src_n,sport,"
           "dst,dst_n,dport,in_if,out_if,src_zone,dst_zone,rule,raw) "
           "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+# l'agente puo' rimandare eventi gia' ricevuti (risposta persa): UNIQUE li scarta
+INSERT_EV = ("INSERT OR IGNORE INTO events(ts,rx,srv_id,chan,record_id,event_id,kind,outcome,"
+             "critical,elevated,account,domain,logon_type,src_ip,src_n,src_host,actor,target,"
+             "reason,auth,logon_id,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+# (tabella, tabella proprietaria, colonna di collegamento)
+LOG_TBL = ("logs", "firewalls", "fw_id")
+EV_TBL = ("events", "servers", "srv_id")
 
 
 class Store:
@@ -507,6 +748,10 @@ class Store:
         for ip, fid in self.fw_cache.items():
             if ip.startswith(DELETED):
                 self.command("delete_fw", fid)
+        # eventi di server eliminati (eliminazione interrotta da un riavvio)
+        for (sid,) in conn.execute("SELECT DISTINCT srv_id FROM events "
+                                   "WHERE srv_id NOT IN (SELECT id FROM servers)").fetchall():
+            self.command("delete_srv", sid)
         last_maint = 0.0
         while True:
             batch = []
@@ -577,39 +822,75 @@ class Store:
         with self._lock:
             self._rates.append((time.time(), count))
 
-    def _delete_where(self, conn, fid, where, args, limit):
-        """Elimina al massimo `limit` log del firewall che soddisfano `where`
-        (a blocchi, aggiornando il contatore). Restituisce quanti ne ha eliminati."""
+    def _delete_where(self, conn, fid, where, args, limit, tbl=LOG_TBL):
+        """Elimina al massimo `limit` righe del firewall/server `fid` che soddisfano
+        `where` (a blocchi, aggiornando il contatore). Restituisce quante ne ha eliminate."""
+        table, owner, _ = tbl
         done = 0
         while done < limit:
-            n = conn.execute(f"DELETE FROM logs WHERE id IN (SELECT id FROM logs WHERE {where} "
+            n = conn.execute(f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} WHERE {where} "
                              "ORDER BY id LIMIT ?)", args + [min(DEL_BLOCK, limit - done)]).rowcount
             if n:
-                conn.execute("UPDATE firewalls SET total=max(0, total-?) WHERE id=?", (n, fid))
+                conn.execute(f"UPDATE {owner} SET total=max(0, total-?) WHERE id=?", (n, fid))
             conn.commit()
             done += n
             if n < DEL_BLOCK:
                 break
         return done
 
-    def _delete_step(self, conn, name, arg, fid, where, args):
-        """Elimina un blocco di log; se ne restano rimette il comando in coda,
+    def _delete_step(self, conn, name, arg, fid, where, args, tbl=LOG_TBL):
+        """Elimina un blocco di righe; se ne restano rimette il comando in coda,
         per non bloccare a lungo la scrittura dei nuovi log.
         Restituisce True se l'eliminazione e' completata."""
         limit = DEL_BLOCK * 5
-        if self._delete_where(conn, fid, where, args, limit) < limit:
+        if self._delete_where(conn, fid, where, args, limit, tbl) < limit:
             return True
         try:
             self.q.put_nowait(("cmd", name, arg))
             return False
         except queue.Full:
-            while self._delete_where(conn, fid, where, args, limit) >= limit:
+            while self._delete_where(conn, fid, where, args, limit, tbl) >= limit:
                 pass
             return True
 
+    def _ingest(self, conn, arg):
+        """Salva un invio dell'agente Windows; il thread web aspetta l'esito in `box`."""
+        sid, meta, rows, ip, box = arg
+        try:
+            if not conn.execute("SELECT 1 FROM servers WHERE id=?", (sid,)).fetchone():
+                box["err"] = (401, "server eliminato")
+                return
+            before = conn.total_changes
+            conn.executemany(INSERT_EV, rows)
+            n = conn.total_changes - before
+            last_ev = max((r[0] for r in rows), default=None)
+            conn.execute(
+                "UPDATE servers SET total=total+?, last_seen=?, ip=?, hostname=coalesce(?, hostname), "
+                "domain=coalesce(?, domain), is_dc=?, os=coalesce(?, os), agent=coalesce(?, agent), "
+                "status=?, last_event=CASE WHEN ? IS NULL THEN last_event "
+                "ELSE max(coalesce(last_event, 0), ?) END WHERE id=?",
+                (n, int(time.time() * 1000), ip, meta["host"], meta["domain"], meta["is_dc"],
+                 meta["os"], meta["ver"], meta["status"], last_ev, last_ev, sid))
+            conn.commit()
+            box["n"] = n
+        except Exception:
+            log.exception("errore salvando gli eventi del server %s", sid)
+            conn.rollback()
+            box["err"] = (500, "errore interno, vedi journalctl -u fwlog")
+        finally:
+            box["ev"].set()
+
     def _command(self, conn, name, arg):
         try:
-            if name == "delete_fw":
+            if name == "ingest":
+                self._ingest(conn, arg)
+            elif name == "delete_srv":
+                # la riga in servers e' gia' stata eliminata dal thread web (token revocato)
+                if not self._delete_step(conn, name, arg, arg, "srv_id = ?", [arg], EV_TBL):
+                    return
+                conn.execute("PRAGMA incremental_vacuum").fetchall()
+                log.info("eventi del server %s eliminati", arg)
+            elif name == "delete_fw":
                 # Il firewall viene prima "rinominato" (ip con prefisso DELETED): sparisce
                 # dalla dashboard, i nuovi log dal suo IP creano un nuovo firewall con un
                 # altro id e, dopo un riavvio, l'eliminazione riprende da qui.
@@ -636,15 +917,18 @@ class Store:
             if name == "delete_logs":
                 self._done_deleting(arg[0])
 
-    def _drop_oldest(self, conn, n):
-        """Elimina gli n log piu' vecchi di tutti i firewall."""
-        hi = conn.execute("SELECT max(id) FROM (SELECT id FROM logs ORDER BY id LIMIT ?)", (n,)).fetchone()[0]
+    def _drop_oldest(self, conn, n, tbl=LOG_TBL):
+        """Elimina le n righe piu' vecchie della tabella (log di tutti i firewall
+        oppure eventi di tutti i server)."""
+        table, owner, fk = tbl
+        hi = conn.execute(f"SELECT max(id) FROM (SELECT id FROM {table} ORDER BY id LIMIT ?)",
+                          (n,)).fetchone()[0]
         if hi is None:
             return 0
-        counts = conn.execute("SELECT fw_id, count(*) FROM logs NOT INDEXED WHERE id <= ? "
-                              "GROUP BY fw_id", (hi,)).fetchall()
-        deleted = conn.execute("DELETE FROM logs WHERE id <= ?", (hi,)).rowcount
-        conn.executemany("UPDATE firewalls SET total=max(0, total-?) WHERE id=?",
+        counts = conn.execute(f"SELECT {fk}, count(*) FROM {table} NOT INDEXED WHERE id <= ? "
+                              f"GROUP BY {fk}", (hi,)).fetchall()
+        deleted = conn.execute(f"DELETE FROM {table} WHERE id <= ?", (hi,)).rowcount
+        conn.executemany(f"UPDATE {owner} SET total=max(0, total-?) WHERE id=?",
                          [(c, f) for f, c in counts])
         conn.commit()
         return deleted
@@ -664,11 +948,20 @@ class Store:
             if row:
                 deleted += self._delete_where(conn, fid, "fw_id = ? AND id <= ?",
                                               [fid, row[0]], DEL_BLOCK * 10)
-        # Protezione disco pieno: elimina i log piu' vecchi finche' non c'e' spazio
+        # Eventi dei server Windows: per data dell'evento (indice srv_id, ts)
+        for sid, days in conn.execute("SELECT id, retention_days FROM servers").fetchall():
+            days = WIN_RETENTION_DAYS if days is None else days
+            if days <= 0:
+                continue
+            cutoff = int((now - days * 86400) * 1000)
+            deleted += self._delete_where(conn, sid, "srv_id = ? AND ts < ?", [sid, cutoff],
+                                          DEL_BLOCK * 10, EV_TBL)
+        # Protezione disco pieno: elimina i log piu' vecchi finche' non c'e' spazio;
+        # gli accessi dei server (pochi e piu' preziosi) solo quando i log sono finiti
         for _ in range(20):
             if shutil.disk_usage(DATA_DIR).free >= MIN_FREE_GB * 1024 ** 3:
                 break
-            n = self._drop_oldest(conn, 50000)
+            n = self._drop_oldest(conn, 50000) or self._drop_oldest(conn, 50000, EV_TBL)
             conn.execute("PRAGMA incremental_vacuum").fetchall()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
             deleted += n
@@ -840,9 +1133,230 @@ def api_facets(p):
         "proto": sorted(found["proto"])[:50],
     }
 
+# ---- server Windows ----
+EV_COLS = ("id, ts, rx, event_id, kind, outcome, critical, elevated, account, domain, "
+           "logon_type, src_ip, src_host, actor, target, reason, auth, logon_id, data")
+EV_TEXT_FILTERS = (
+    ("user", ("account",)), ("host", ("src_host",)), ("kind", ("kind",)),
+    ("outcome", ("outcome",)), ("auth", ("auth",)), ("actor", ("actor",)),
+    ("target", ("target",)),
+)
+EV_SEARCH = ("coalesce(account,'')||' '||coalesce(domain,'')||' '||coalesce(src_host,'')||' '||"
+             "coalesce(actor,'')||' '||coalesce(target,'')||' '||coalesce(reason,'')||' '||"
+             "coalesce(data,'')")
+
+
+def _retention(v):
+    """Valore di conservazione dal JSON: None = predefinita, 0 = illimitata."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, bool) or not isinstance(v, (int, str)):
+        raise ValueError("conservazione non valida")
+    v = _int(v, "conservazione")
+    if not 0 <= v <= MAX_RETENTION:
+        raise ValueError(f"la conservazione deve essere tra 0 e {MAX_RETENTION} giorni")
+    return v
+
+
+def build_where_ev(p):
+    if not p.get("srv"):
+        raise ValueError("parametro srv mancante")
+    where, args = ["srv_id = ?"], [_int(p["srv"], "srv")]
+
+    def add(name, sql, a):
+        neg = p[name].strip().startswith("!")
+        where.append(f"NOT coalesce({sql}, 0)" if neg else sql)
+        args.extend(a)
+
+    def val(name):
+        return p[name].strip().lstrip("!").strip()
+
+    if p.get("from"):
+        where.append("ts >= ?"); args.append(_int(p["from"], "da"))
+    if p.get("to"):
+        where.append("ts <= ?"); args.append(_int(p["to"], "a"))
+    if p.get("bts") and p.get("bid"):
+        # pagina successiva: ordinamento per (ts, id) decrescente
+        bts, bid = _int(p["bts"], "bts"), _int(p["bid"], "bid")
+        where.append("(ts < ? OR (ts = ? AND id < ?))"); args.extend([bts, bts, bid])
+    if p.get("after"):
+        where.append("id > ?"); args.append(_int(p["after"], "after"))
+    if p.get("ip") and val("ip"):
+        sql, a = ip_condition(("src_n",), val("ip"))
+        add("ip", sql, a)
+    if p.get("logon_type") and val("logon_type"):
+        add("logon_type", "(logon_type = ?)", [_int(val("logon_type"), "tipo di accesso")])
+    if p.get("critical") == "1":
+        where.append("critical = 1")
+    for name, cols in EV_TEXT_FILTERS:
+        if p.get(name) and val(name):
+            v = val(name)
+            if name == "user":
+                v = _split_acct(v)[0] or v
+            add(name, "(" + " OR ".join(f"{c} = ? COLLATE NOCASE" for c in cols) + ")", [v] * len(cols))
+    if p.get("q") and val("q"):
+        q = val("q").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        add("q", f"({EV_SEARCH} LIKE ? ESCAPE '\\')", [f"%{q}%"])
+    return " AND ".join(where), args
+
+
+def api_servers():
+    now = int(time.time() * 1000)
+    c = store.connect(readonly=True)
+    try:
+        rows = c.execute("SELECT id, name, created, hostname, domain, ip, is_dc, os, agent, status, "
+                         "last_seen, last_event, total, retention_days FROM servers "
+                         "ORDER BY name COLLATE NOCASE").fetchall()
+        out = []
+        for r in rows:
+            s = dict(r)
+            try:
+                s["status"] = json.loads(r["status"] or "{}")
+            except ValueError:
+                s["status"] = {}
+            s["fail_24h"], s["critical_24h"] = c.execute(
+                "SELECT coalesce(sum(outcome = 'fail'), 0), coalesce(sum(critical), 0) FROM events "
+                "WHERE srv_id = ? AND ts >= ?", (r["id"], now - 86400000)).fetchone()
+            out.append(s)
+    finally:
+        c.close()
+    return {"now": now, "servers": out, "pin": TLS_PIN, "retention_days": WIN_RETENTION_DAYS}
+
+
+def api_server_create(d):
+    name = str(d.get("name") or "").strip()[:80]
+    if not name:
+        raise ValueError("indica il nome del server")
+    tok = secrets.token_hex(32)   # esadecimale: un token che inizia con "-" confonderebbe PowerShell
+    c = store.connect()
+    try:
+        cur = c.execute("INSERT INTO servers(name, token_hash, created) VALUES(?,?,?)",
+                        (name, token_hash(tok), int(time.time() * 1000)))
+        c.commit()
+        sid = cur.lastrowid
+    finally:
+        c.close()
+    log.info("server Windows aggiunto: %s (id %s)", name, sid)
+    return {"id": sid, "token": tok, "pin": TLS_PIN}
+
+
+def api_server_update(sid, d):
+    sets, args, out = [], [], {"ok": True}
+    if "name" in d:
+        name = str(d["name"] or "").strip()[:80]
+        if not name:
+            raise ValueError("il nome non puo' essere vuoto")
+        sets.append("name=?"); args.append(name)
+    if "retention_days" in d:
+        sets.append("retention_days=?"); args.append(_retention(d["retention_days"]))
+    if d.get("new_token") is True:
+        # il vecchio token smette subito di funzionare
+        tok = secrets.token_hex(32)   # esadecimale: un token che inizia con "-" confonderebbe PowerShell
+        sets.append("token_hash=?"); args.append(token_hash(tok))
+        out.update(token=tok, pin=TLS_PIN)
+    if not sets:
+        raise ValueError("niente da modificare")
+    c = store.connect()
+    try:
+        n = c.execute(f"UPDATE servers SET {', '.join(sets)} WHERE id=?", args + [sid]).rowcount
+        c.commit()
+    finally:
+        c.close()
+    if not n:
+        return None
+    if "token" in out:
+        log.info("nuovo token per il server %s", sid)
+    return out
+
+
+def api_server_delete(sid):
+    c = store.connect()
+    try:
+        n = c.execute("DELETE FROM servers WHERE id=?", (sid,)).rowcount
+        c.commit()
+    finally:
+        c.close()
+    if n:
+        # gli eventi vengono eliminati a blocchi dal thread writer
+        store.command("delete_srv", sid)
+    return n
+
+
+def api_events(p):
+    where, args = build_where_ev(p)
+    limit = max(1, min(_int(p.get("limit", 200), "limit"), 1000))
+    c = store.connect(readonly=True)
+    try:
+        rows = c.execute(f"SELECT {EV_COLS} FROM events WHERE {where} ORDER BY ts DESC, id DESC LIMIT ?",
+                         args + [limit]).fetchall()
+    finally:
+        c.close()
+    return {"rows": [dict(r) for r in rows], "more": len(rows) == limit}
+
+
+def api_events_csv(p):
+    where, args = build_where_ev(p)
+    cols = ["ts", "event_id", "kind", "outcome", "critical", "elevated", "account", "domain",
+            "logon_type", "src_ip", "src_host", "actor", "target", "reason", "auth", "logon_id", "data"]
+    c = store.connect(readonly=True)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(cols)
+    try:
+        for r in c.execute(f"SELECT {', '.join(cols)} FROM events WHERE {where} "
+                           "ORDER BY ts DESC, id DESC LIMIT 100000", args):
+            r = [("'" + v) if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+                 for v in r]
+            r[0] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r[0] / 1000))
+            w.writerow(r)
+    finally:
+        c.close()
+    return buf.getvalue()
+
+
+def api_events_facets(p):
+    sid = _int(p.get("srv"), "srv")
+    users, hosts = set(), set()
+    c = store.connect(readonly=True)
+    try:
+        for r in c.execute("SELECT account, src_host FROM events WHERE srv_id=? "
+                           "ORDER BY ts DESC LIMIT 5000", (sid,)):
+            if r["account"]:
+                users.add(r["account"])
+            if r["src_host"]:
+                hosts.add(r["src_host"])
+    finally:
+        c.close()
+    key = str.lower
+    return {"user": sorted(users, key=key)[:300], "host": sorted(hosts, key=key)[:300]}
+
+
+_last_bad_token = [0.0]
+
+
+def ingest_auth(header):
+    """Id del server a cui appartiene il token (header Authorization: Bearer), o None."""
+    if not header.startswith("Bearer "):
+        return None
+    tok = header[7:].strip()
+    if not tok or len(tok) > 200:
+        return None
+    c = store.connect(readonly=True)
+    try:
+        r = c.execute("SELECT id FROM servers WHERE token_hash=?", (token_hash(tok),)).fetchone()
+    finally:
+        c.close()
+    return r[0] if r else None
+
 # --------------------------------------------------------------------------
 # Server web
 # --------------------------------------------------------------------------
+class HttpError(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+
+
 class Web(BaseHTTPRequestHandler):
     server_version = "fwlog"
     protocol_version = "HTTP/1.1"
@@ -885,11 +1399,13 @@ class Web(BaseHTTPRequestHandler):
                    extra={"WWW-Authenticate": 'Basic realm="fwlog", charset="UTF-8"'})
         return False
 
-    def _handle(self, fn):
-        if not self._auth():
+    def _handle(self, fn, auth=True):
+        if auth and not self._auth():
             return
         try:
             fn()
+        except HttpError as e:
+            self._send(e.code, {"error": str(e)})
         except ValueError as e:
             self._send(400, {"error": str(e)})
         except (BrokenPipeError, ConnectionResetError):
@@ -902,6 +1418,9 @@ class Web(BaseHTTPRequestHandler):
         self._handle(self._get)
 
     def do_POST(self):
+        if urlparse(self.path).path == "/api/ingest":
+            # agente Windows: si autentica con il proprio token, non con la password
+            return self._handle(self._ingest, auth=False)
         self._handle(self._post)
 
     def do_DELETE(self):
@@ -925,23 +1444,81 @@ class Web(BaseHTTPRequestHandler):
             self._send(200, api_logs_count(p))
         elif u.path == "/api/facets":
             self._send(200, api_facets(p))
+        elif u.path == "/api/servers":
+            self._send(200, api_servers())
+        elif u.path == "/api/events":
+            self._send(200, api_events(p))
+        elif u.path == "/api/events.csv":
+            name = time.strftime("fwlog-accessi-%Y%m%d-%H%M%S.csv")
+            self._send(200, api_events_csv(p), "text/csv; charset=utf-8",
+                       {"Content-Disposition": f'attachment; filename="{name}"'})
+        elif u.path == "/api/events/facets":
+            self._send(200, api_events_facets(p))
+        elif u.path == "/agent/fwlog-agent.ps1":
+            try:
+                with open(os.path.join(AGENT_DIR, "fwlog-agent.ps1"), "rb") as f:
+                    data = f.read()
+            except OSError:
+                return self._send(404, {"error": "agente non installato in " + AGENT_DIR})
+            self._send(200, data, "application/octet-stream",
+                       {"Content-Disposition": 'attachment; filename="fwlog-agent.ps1"'})
         else:
             self._send(404, {"error": "non trovato"})
 
-    def _body_json(self):
+    def _body_json(self, limit=65536):
         if not self.headers.get("Content-Type", "").startswith("application/json"):
             raise ValueError("Content-Type deve essere application/json")
-        n = int(self.headers.get("Content-Length") or 0)
         try:
-            d = json.loads(self.rfile.read(min(n, 65536)) or b"{}")
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > limit:
+            # il corpo non viene letto: la connessione va chiusa
+            self.close_connection = True
+            raise HttpError(413 if n > limit else 400, "richiesta troppo grande o non valida")
+        try:
+            d = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             raise ValueError("JSON non valido")
         if not isinstance(d, dict):
             raise ValueError("JSON non valido")
         return d
 
+    def _ingest(self):
+        sid = ingest_auth(self.headers.get("Authorization", ""))
+        if sid is None:
+            self.close_connection = True
+            if time.time() - _last_bad_token[0] > 60:
+                _last_bad_token[0] = time.time()
+                log.warning("invio dell'agente con token non valido da %s", self.client_address[0])
+            raise HttpError(401, "token non valido")
+        d = self._body_json(INGEST_MAX)
+        rx = int(time.time() * 1000)
+        meta, rows = win_ingest_rows(sid, d, rx)
+        box = {"ev": threading.Event(), "n": None, "err": None}
+        ip = norm_ip(self.client_address[0]) or self.client_address[0]
+        try:
+            store.q.put_nowait(("cmd", "ingest", (sid, meta, rows, ip, box)))
+        except queue.Full:
+            raise HttpError(503, "fwlog sovraccarico, riprovare")
+        # la risposta arriva solo a dati salvati: l'agente avanza solo dopo un 200
+        if not box["ev"].wait(45):
+            raise HttpError(503, "salvataggio non completato in tempo, riprovare")
+        if box["err"]:
+            raise HttpError(*box["err"])
+        self._send(200, {"ok": True, "received": len(rows), "stored": box["n"]})
+
     def _post(self):
-        m = re.fullmatch(r"/api/firewalls/(\d+)", urlparse(self.path).path)
+        path = urlparse(self.path).path
+        if path == "/api/servers":
+            return self._send(200, api_server_create(self._body_json()))
+        m = re.fullmatch(r"/api/servers/(\d+)", path)
+        if m:
+            out = api_server_update(int(m.group(1)), self._body_json())
+            if out is None:
+                return self._send(404, {"error": "server non trovato"})
+            return self._send(200, out)
+        m = re.fullmatch(r"/api/firewalls/(\d+)", path)
         if not m:
             return self._send(404, {"error": "non trovato"})
         d = self._body_json()
@@ -952,16 +1529,7 @@ class Web(BaseHTTPRequestHandler):
                 raise ValueError("il nome non puo' essere vuoto")
             sets.append("name=?"); args.append(name)
         if "retention_days" in d:
-            r = d["retention_days"]
-            if r is not None and r != "":
-                if isinstance(r, bool) or not isinstance(r, (int, str)):
-                    raise ValueError("conservazione non valida")
-                r = _int(r, "conservazione")
-                if not 0 <= r <= MAX_RETENTION:
-                    raise ValueError(f"la conservazione deve essere tra 0 e {MAX_RETENTION} giorni")
-            else:
-                r = None
-            sets.append("retention_days=?"); args.append(r)
+            sets.append("retention_days=?"); args.append(_retention(d["retention_days"]))
         if not sets:
             raise ValueError("niente da modificare")
         c = store.connect()
@@ -979,6 +1547,11 @@ class Web(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/api/logs":
             return self._send(202, api_logs_delete({k: v[-1] for k, v in parse_qs(u.query).items()}))
+        m = re.fullmatch(r"/api/servers/(\d+)", u.path)
+        if m:
+            if not api_server_delete(int(m.group(1))):
+                return self._send(404, {"error": "server non trovato"})
+            return self._send(202, {"ok": True})
         m = re.fullmatch(r"/api/firewalls/(\d+)", u.path)
         if not m:
             return self._send(404, {"error": "non trovato"})
@@ -1108,7 +1681,7 @@ class WebServer(ThreadingHTTPServer):
 
 # --------------------------------------------------------------------------
 def main():
-    global store
+    global store, TLS_PIN
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     os.makedirs(DATA_DIR, exist_ok=True)
     store = Store()
@@ -1129,6 +1702,7 @@ def main():
         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True,
                                        do_handshake_on_connect=False)
         scheme = "https"
+        TLS_PIN = cert_pin(TLS_CERT)
     if not WEB_PASS:
         log.warning("FWLOG_WEB_PASS non impostata: la dashboard e' accessibile senza password")
     if ALLOWED_SOURCES:
