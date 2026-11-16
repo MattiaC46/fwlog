@@ -174,7 +174,10 @@ sudo firewall-cmd --list-all
 ```
 
 Per una protezione in più a livello applicativo imposta anche `FWLOG_ALLOWED_SOURCES`
-in `/etc/fwlog/fwlog.env` (es. `192.168.1.1,192.168.1.254`).
+in `/etc/fwlog/fwlog.env` (es. `192.168.1.1,192.168.1.254`), oppure alla prima
+installazione con `sudo ALLOWED_SOURCES=192.168.1.1,192.168.1.254 ./install.sh`, che stampa
+anche le regole firewalld per quelle sorgenti. La dashboard segnala se la variabile è vuota
+e mostra gli IP rifiutati.
 
 ---
 

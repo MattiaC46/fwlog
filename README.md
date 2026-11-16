@@ -111,6 +111,16 @@ La dashboard è sulla porta **10443**. Per usarne un'altra: `sudo WEB_PORT=11443
 (vale solo alla prima installazione; la variabile va scritta dopo `sudo`). Su Rocky Linux 9 segui
 [docs/INSTALL-ROCKY9.md](docs/INSTALL-ROCKY9.md).
 
+Se conosci già gli IP dei firewall e degli switch, indicali subito: solo loro potranno
+inviare syslog, e lo script stampa i comandi del firewall della VM già limitati a quelle
+sorgenti:
+
+```bash
+sudo ALLOWED_SOURCES=192.168.1.1,192.168.1.254,10.0.10.0/24 ./install.sh
+```
+
+Si possono impostare anche dopo, con `FWLOG_ALLOWED_SOURCES` (sezione 7).
+
 Il repository è privato: per clonarlo sulla VM serve un accesso GitHub (es. `gh auth login`
 oppure un token), in alternativa copia la cartella con `scp`.
 
@@ -472,7 +482,7 @@ Tutto in `/etc/fwlog/fwlog.env`; dopo una modifica: `sudo systemctl restart fwlo
 | `FWLOG_RETENTION_DAYS` | `90` | conservazione predefinita in giorni, `0` = senza limite; ogni firewall può averne una propria dalla dashboard |
 | `FWLOG_WIN_RETENTION_DAYS` | `365` | conservazione predefinita degli accessi dei server Windows, `0` = senza limite; modificabile per ogni server |
 | `FWLOG_MIN_FREE_GB` | `2` | sotto questo spazio libero vengono eliminati i log più vecchi |
-| `FWLOG_ALLOWED_SOURCES` | vuoto | IP/subnet ammessi, es. `192.168.1.1,10.0.0.0/24`; vuoto = tutti |
+| `FWLOG_ALLOWED_SOURCES` | vuoto | IP/subnet ammessi a inviare syslog (firewall, switch), es. `192.168.1.1,10.0.0.0/24`; vuoto = tutti. Le voci non valide vengono ignorate e segnalate nel journal e nella dashboard |
 | `FWLOG_QUEUE_MAX` | `200000` | messaggi in attesa di scrittura; oltre vengono scartati |
 
 Per usare un certificato proprio, sostituisci `/etc/fwlog/tls.crt` e `tls.key`
@@ -527,6 +537,21 @@ sudo systemctl restart fwlog    # riavvio (i messaggi in coda vengono salvati)
 Il piè della barra laterale mostra spazio libero, dimensione del database e **messaggi
 scartati**. Se gli scartati crescono, il server non riesce a scrivere abbastanza in
 fretta: verifica la velocità del disco o riduci i log inviati (es. solo traffico negato).
+
+Mostra anche lo stato delle **sorgenti syslog**:
+
+- **Sorgenti syslog: tutte ammesse**: `FWLOG_ALLOWED_SOURCES` è vuoto e chiunque
+  raggiunga la porta 514 può inviare log (e creare firewall nell'elenco). Indica firewall
+  e switch nella variabile e riavvia.
+- **Voci ignorate**: valori della variabile che non sono IP o subnet validi (es.
+  `192.168.1.300`); vanno corretti, perché quel dispositivo viene rifiutato.
+- **Da sorgenti non ammesse**: messaggi e connessioni rifiutati, con gli ultimi IP,
+  quante volte e quando. Se compare un tuo dispositivo, aggiungilo alla variabile.
+
+Le connessioni TCP da sorgenti non ammesse vengono chiuse subito e non occupano posti
+tra le 500 connessioni contemporanee. Per una protezione anche a livello di rete limita
+la porta 514 alle stesse sorgenti nel firewall della VM (vedi
+[docs/INSTALL-ROCKY9.md](docs/INSTALL-ROCKY9.md)).
 
 Pulsanti nell'intestazione di un firewall:
 
