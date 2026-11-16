@@ -1,10 +1,15 @@
 # fwlog
 
-Server syslog semplice dedicato ai **log dei firewall**, con dashboard web.
+Server syslog semplice dedicato ai **log dei firewall** e agli **accessi degli
+amministratori dei server Windows**, con dashboard web.
 
 I firewall inviano syslog (UDP o TCP 514). fwlog estrae sorgente, destinazione, porte,
 protocollo, azione, interfacce, zone e regola, e li salva in SQLite su un disco dedicato.
 Dalla dashboard si sceglie un firewall e si filtrano i suoi log.
+
+I server Windows (2016–2025, anche controller di dominio) inviano via HTTPS gli accessi
+degli account amministratori, riusciti e falliti, letti dal registro Security da uno script
+PowerShell pianificato: nessun programma da installare (vedi [sezione 5](#5-accessi-degli-amministratori-server-windows)).
 
 - Un solo file Python, sola libreria standard: niente `pip`, niente dipendenze.
 - Formati riconosciuti: pfSense, OPNsense, FortiGate, Sophos Firewall, Palo Alto,
@@ -26,12 +31,13 @@ Non è un SIEM: niente correlazione, alert o gestione utenti.
 2. [Installazione](#2-installazione)
 3. [Primo accesso](#3-primo-accesso)
 4. [Configurazione dei firewall](#4-configurazione-dei-firewall)
-5. [Uso dei filtri](#5-uso-dei-filtri)
-6. [Configurazione](#6-configurazione)
-7. [Spazio su disco](#7-spazio-su-disco)
-8. [Gestione](#8-gestione)
-9. [Test con test-sender.py](#9-test-con-test-senderpy)
-10. [Limiti noti](#10-limiti-noti)
+5. [Accessi degli amministratori (server Windows)](#5-accessi-degli-amministratori-server-windows)
+6. [Uso dei filtri](#6-uso-dei-filtri)
+7. [Configurazione](#7-configurazione)
+8. [Spazio su disco](#8-spazio-su-disco)
+9. [Gestione](#9-gestione)
+10. [Test con test-sender.py](#10-test-con-test-senderpy)
+11. [Limiti noti](#11-limiti-noti)
 
 ---
 
@@ -281,7 +287,141 @@ temporaneamente irraggiungibile. Lo stesso schema funziona per iptables/nftables
 
 ---
 
-## 5. Uso dei filtri
+## 5. Accessi degli amministratori (server Windows)
+
+fwlog registra gli accessi degli **account amministratori** ai server Windows
+(Windows Server 2016–2025, controller di dominio compresi). Sul server non si installa
+nessun programma: `fwlog-agent.ps1` è uno script PowerShell che gira **ogni minuto come
+attività pianificata** (utente SYSTEM), legge dal registro Security solo gli eventi nuovi,
+tiene quelli che riguardano amministratori e li invia a fwlog via HTTPS. Non resta nessun
+processo attivo tra un giro e l'altro.
+
+### Cosa viene registrato
+
+| Evento | Event ID |
+|---|---|
+| Accesso (locale, RDP, rete, sblocco, credenziali in cache) | 4624 |
+| Accesso fallito, con il motivo (password errata, utente inesistente, account bloccato…) | 4625; sui DC anche 4771 (Kerberos) e 4776 (NTLM) |
+| Disconnessione, RDP scollegato o riconnesso | 4634, 4647, 4779, 4778 |
+| Uso di credenziali esplicite (runas, accesso ad altri server) | 4648 |
+| Account bloccato, sbloccato, password cambiata o reimpostata, account abilitato, disabilitato, eliminato | 4740, 4767, 4723, 4724, 4722, 4725, 4726 |
+| Aggiunta o rimozione da un gruppo privilegiato (Administrators, Domain Admins, Enterprise Admins, Remote Desktop Users, operatori…) | 4728/4729, 4732/4733, 4756/4757 |
+| **Registro di controllo cancellato**, **criteri di controllo modificati** | 1102, 4719 |
+
+Gli eventi critici (registro cancellato, criteri modificati, aggiunte a gruppi
+privilegiati) sono evidenziati in ambra; la barra laterale mostra per ogni server gli
+eventi critici e gli accessi falliti delle ultime 24 ore.
+
+**Solo amministratori.** L'agente considera amministratori:
+
+- i membri, anche indiretti, del gruppo Administrators locale e, in un dominio, del gruppo
+  Administrators del dominio e dei gruppi di dominio presenti nel gruppo locale;
+- gli account protetti di Active Directory (`adminCount=1`: Domain Admins, Enterprise
+  Admins, operatori…);
+- gli account che ricevono privilegi speciali all'accesso (evento 4672);
+- i nomi tipici `administrator`, `admin`, `amministratore` anche se l'account non esiste,
+  per vedere i tentativi di attacco;
+- gli account indicati con `-ExtraAdmin`.
+
+Sono esclusi account computer, SYSTEM e servizi di sistema, attività pianificate e
+servizi (accessi di tipo 4 e 5) e gli account indicati con `-ExcludeUser` (utile per gli
+account di servizio del backup o di SQL Server, che accedono di continuo). Gli accessi di
+rete ripetuti (tipo 3, frequenti sui controller di dominio) dello stesso utente dallo
+stesso IP vengono registrati al massimo uno ogni 10 minuti.
+
+L'ora mostrata è quella dell'evento sul server Windows (sincronizzato dal dominio), non
+quella di ricezione: gli eventi inviati in ritardo finiscono al posto giusto.
+
+### Aggiungere un server
+
+1. Nella dashboard: **Server Windows → Aggiungi**, scegli un nome (es. `DC01`).
+2. Scarica `fwlog-agent.ps1` dal link nella finestra e copialo sul server.
+3. Controlla l'indirizzo di fwlog proposto: deve essere raggiungibile **dal server**
+   (porta TCP 10443).
+4. Sul server, in PowerShell **come amministratore**, nella cartella del file, esegui il
+   comando mostrato (pulsante **Copia comando**), ad esempio:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\fwlog-agent.ps1 -Install -Url https://192.168.1.20:10443 -Token 3f1c… -Pin 9A0B…
+   ```
+
+   Opzioni: `-ExcludeUser svc_backup,svc_sql` e `-ExtraAdmin mario.rossi`.
+5. Entro un minuto il server diventa verde nella barra laterale.
+
+Il token è personale per ogni server e si vede **solo alla creazione**: fwlog ne conserva
+solo l'impronta. Se lo perdi, o se il server viene dismesso, usa **Nuovo token**
+(il vecchio smette subito di funzionare) e riesegui il comando sul server.
+`-Pin` è l'impronta SHA-256 del certificato di fwlog: l'agente rifiuta qualsiasi altro
+certificato, quindi il token non può essere intercettato da un falso server. Se sostituisci
+il certificato di fwlog, riesegui l'installazione sui server con la nuova impronta.
+
+Se il firewall della VM è attivo, apri la porta della dashboard ai server, ad esempio:
+
+```bash
+sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.1.0/24 port port=10443 protocol=tcp accept'
+sudo firewall-cmd --reload
+```
+
+### Cosa fa l'installazione sul server
+
+- copia lo script in `C:\Program Files\fwlog` (modificabile solo dagli amministratori);
+- salva configurazione e stato in `C:\ProgramData\fwlog`, leggibile solo da SYSTEM e
+  Administrators perché contiene il token; il registro dell'agente è
+  `C:\ProgramData\fwlog\agent.log`;
+- attiva con `auditpol` i criteri di controllo necessari (Logon, Logoff, Special Logon,
+  Account Lockout, Other Logon/Logoff Events, User Account Management, Security Group
+  Management, Audit Policy Change; sui DC anche Credential Validation e Kerberos
+  Authentication Service) e fa prevalere le sottocategorie sulle categorie legacy;
+- porta il registro Security ad almeno 256 MB;
+- invia subito una prova (con gli eventi delle ultime 24 ore) e crea l'attività pianificata
+  `\fwlog\fwlog-agent`, eseguita ogni minuto come SYSTEM.
+
+**Domini con GPO.** Se una GPO imposta i *criteri di controllo avanzati*, al primo
+aggiornamento sovrascrive quelli locali. In quel caso configurali nella GPO (per i
+controller di dominio nella *Default Domain Controllers Policy*): *Configurazione
+computer → Criteri → Impostazioni di Windows → Impostazioni sicurezza → Configurazione
+criteri di controllo avanzati*, con le sottocategorie elencate sopra (successo; per
+Logon anche errore; sui DC errore per Credential Validation e Kerberos Authentication
+Service). La dashboard avvisa se qualche criterio non è attivo.
+
+Comandi utili sul server (PowerShell come amministratore):
+
+```powershell
+$a = "$env:ProgramFiles\fwlog\fwlog-agent.ps1"
+powershell -ExecutionPolicy Bypass -File $a -Test        # un giro di prova con il dettaglio
+Get-Content "$env:ProgramData\fwlog\agent.log" -Tail 20  # ultime righe del registro dell'agente
+Get-ScheduledTask -TaskPath \fwlog\                      # stato dell'attività pianificata
+powershell -ExecutionPolicy Bypass -File $a -Uninstall   # rimozione
+```
+
+### Affidabilità
+
+- L'agente avanza solo quando fwlog conferma il salvataggio. Se fwlog è spento o
+  irraggiungibile, gli eventi restano nel registro Security e vengono inviati appena torna
+  disponibile; gli invii ripetuti non creano doppioni.
+- Con 256 MB di registro Security si coprono da qualche giorno (controller di dominio
+  molto attivi) a qualche settimana di interruzione. Se il registro viene sovrascritto
+  prima della lettura, la dashboard lo segnala.
+- Il pallino del server è verde se l'agente ha contattato fwlog negli ultimi 3 minuti,
+  ambra fino a 15, **rosso** oltre: server spento, rete interrotta o agente disattivato.
+
+### Conservazione e Garante privacy
+
+Gli accessi dei server sono conservati per **365 giorni** (`FWLOG_WIN_RETENTION_DAYS`,
+modificabile per ogni server con **Conservazione**). Il provvedimento del Garante sugli
+amministratori di sistema (27/11/2008) chiede di registrare gli accessi degli
+amministratori e di conservarli per almeno **6 mesi**, in modo completo e inalterabile.
+fwlog li tiene su una macchina separata, con credenziali diverse da quelle degli
+amministratori Windows, ma **non** firma né cifra i registri: per una conformità formale
+valuta con il tuo consulente se servono misure aggiuntive (ad esempio esportazioni CSV
+periodiche su un archivio non modificabile).
+
+Se il disco si riempie, vengono eliminati prima i log dei firewall e solo dopo, quando
+non ce ne sono più, gli accessi dei server.
+
+---
+
+## 6. Uso dei filtri
 
 Scegli un firewall nella barra laterale, compila uno o più campi e premi **Invio**
 o **Applica filtri**. I filtri si combinano tra loro (tutti devono essere veri).
@@ -314,7 +454,7 @@ con un intervallo di tempo o con un filtro IP.
 
 ---
 
-## 6. Configurazione
+## 7. Configurazione
 
 Tutto in `/etc/fwlog/fwlog.env`; dopo una modifica: `sudo systemctl restart fwlog`.
 
@@ -330,6 +470,7 @@ Tutto in `/etc/fwlog/fwlog.env`; dopo una modifica: `sudo systemctl restart fwlo
 | `FWLOG_WEB_PASS` | generata | password; se vuota la dashboard **non** è protetta |
 | `FWLOG_TLS_CERT`, `FWLOG_TLS_KEY` | `/etc/fwlog/tls.*` | certificato; se vuoti la dashboard è in HTTP |
 | `FWLOG_RETENTION_DAYS` | `90` | conservazione predefinita in giorni, `0` = senza limite; ogni firewall può averne una propria dalla dashboard |
+| `FWLOG_WIN_RETENTION_DAYS` | `365` | conservazione predefinita degli accessi dei server Windows, `0` = senza limite; modificabile per ogni server |
 | `FWLOG_MIN_FREE_GB` | `2` | sotto questo spazio libero vengono eliminati i log più vecchi |
 | `FWLOG_ALLOWED_SOURCES` | vuoto | IP/subnet ammessi, es. `192.168.1.1,10.0.0.0/24`; vuoto = tutti |
 | `FWLOG_QUEUE_MAX` | `200000` | messaggi in attesa di scrittura; oltre vengono scartati |
@@ -339,7 +480,7 @@ Per usare un certificato proprio, sostituisci `/etc/fwlog/tls.crt` e `tls.key`
 
 ---
 
-## 7. Spazio su disco
+## 8. Spazio su disco
 
 Ogni log occupa circa **400–600 byte** nel database, indici compresi (circa 470 byte
 misurati con i campioni di prova). Un disco da 100 GB contiene quindi circa
@@ -375,7 +516,7 @@ df -h /srv/fwlog
 
 ---
 
-## 8. Gestione
+## 9. Gestione
 
 ```bash
 systemctl status fwlog          # stato
@@ -402,7 +543,7 @@ Lo spazio liberato viene riutilizzato dal database; il file si riduce gradualmen
 
 ---
 
-## 9. Test con test-sender.py
+## 10. Test con test-sender.py
 
 `test-sender.py` invia un esempio di log per ogni formato supportato:
 
@@ -411,6 +552,16 @@ python3 test-sender.py 192.168.200.56            # UDP
 python3 test-sender.py 192.168.200.56 --tcp      # TCP
 python3 test-sender.py 192.168.200.56 -n 50000   # prova di carico
 ```
+
+Per gli accessi dei server Windows, crea un server dalla dashboard e usa il suo token:
+
+```bash
+python3 test-sender.py https://192.168.200.56:10443 --win <token>
+```
+
+Vengono inviati 15 eventi di esempio come li manda l'agente (accesso RDP, password errata,
+blocco, aggiunta a Domain Admins, registro cancellato…); ripetendo il comando se ne
+aggiungono altri.
 
 Dopo l'invio compare un firewall con l'IP della macchina da cui hai lanciato lo script;
 puoi eliminarlo dalla dashboard a fine prova. Nella prova di carico **Messaggi scartati**
@@ -429,7 +580,7 @@ python3 test-sender.py 127.0.0.1 -p 5514
 
 ---
 
-## 10. Limiti noti
+## 11. Limiti noti
 
 - **Ora di ricezione**, non quella del firewall: gli orologi e i formati data dei
   dispositivi sono troppo inaffidabili. Un ritardo di rete o di coda sposta di poco l'ora.
@@ -439,5 +590,11 @@ python3 test-sender.py 127.0.0.1 -p 5514
 - Un solo utente per la dashboard.
 - MikroTik non indica l'azione nel messaggio (vedi `log-prefix`); Cisco ASA registra sia
   apertura sia chiusura delle connessioni (`Built`/`Teardown`), entrambe come `allow`.
+- Server Windows: l'agente non è a prova di amministratore malintenzionato, che può
+  disattivare l'attività pianificata o cancellare il registro Security. Gli eventi già
+  inviati restano però su fwlog, la cancellazione del registro compare come evento
+  critico e un agente muto diventa rosso nella dashboard.
+- Server Windows: si registrano gli accessi, non le azioni svolte durante la sessione.
+  Con NLA attivo i tentativi RDP falliti risultano accessi di tipo «Rete».
 - Pensato per piccole e medie aziende, fino a qualche migliaio di messaggi al secondo.
   Oltre conviene una soluzione come Graylog o basata su ClickHouse.

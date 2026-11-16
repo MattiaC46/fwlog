@@ -6,11 +6,19 @@ verificare che ricezione e parsing funzionino.
   python3 test-sender.py 192.168.1.50            # un esempio per formato, UDP
   python3 test-sender.py 192.168.1.50 --tcp
   python3 test-sender.py 192.168.1.50 -n 50000   # prova di carico
+
+Eventi di accesso Windows, come li invia l'agente (token dalla dashboard:
+Server Windows > Aggiungi). Il certificato autofirmato non viene verificato.
+  python3 test-sender.py https://192.168.1.50:10443 --win <token>
 """
 import argparse
+import json
 import random
 import socket
+import ssl
 import time
+import urllib.error
+import urllib.request
 
 SAMPLES = [
     # pfSense (BSD syslog)
@@ -59,14 +67,93 @@ SAMPLES = [
 ]
 
 
+# Eventi del registro Security come li manda fwlog-agent.ps1: Event ID e campi EventData.
+# "elev" = token con privilegi di amministratore (4672 collegato).
+WIN_SAMPLES = [
+    # accesso RDP di un amministratore di dominio
+    (4624, True, {"TargetUserSid": "S-1-5-21-1-2-3-1104", "TargetUserName": "mrossi", "TargetDomainName": "CONTOSO",
+                  "TargetLogonId": "0x5a1b2", "LogonType": "10", "WorkstationName": "PC-MARIO",
+                  "IpAddress": "192.168.1.50", "AuthenticationPackageName": "Negotiate",
+                  "ElevatedToken": "%%1842", "TargetLinkedLogonId": "0x0"}),
+    # accesso di rete (condivisione amministrativa) dallo stesso utente
+    (4624, True, {"TargetUserSid": "S-1-5-21-1-2-3-1104", "TargetUserName": "mrossi", "TargetDomainName": "CONTOSO",
+                  "TargetLogonId": "0x7c3d1", "LogonType": "3", "WorkstationName": "PC-MARIO",
+                  "IpAddress": "::ffff:192.168.1.50", "AuthenticationPackageName": "Kerberos",
+                  "ElevatedToken": "%%1842"}),
+    # password errata dell'amministratore
+    (4625, False, {"TargetUserSid": "S-1-0-0", "TargetUserName": "Administrator", "TargetDomainName": "CONTOSO",
+                   "Status": "0xc000006d", "SubStatus": "0xc000006a", "LogonType": "10",
+                   "WorkstationName": "LAPTOP-EXT", "IpAddress": "10.10.5.23",
+                   "AuthenticationPackageName": "NTLM"}),
+    # tentativo dall'esterno con un utente inesistente
+    (4625, False, {"TargetUserSid": "S-1-0-0", "TargetUserName": "admin", "TargetDomainName": "",
+                   "Status": "0xc000006d", "SubStatus": "0xc0000064", "LogonType": "3",
+                   "WorkstationName": "-", "IpAddress": "185.220.101.4", "AuthenticationPackageName": "NTLM"}),
+    # controller di dominio: preautenticazione Kerberos fallita, NTLM fallito, blocco
+    (4771, False, {"TargetUserName": "mrossi", "TargetSid": "S-1-5-21-1-2-3-1104", "ServiceName": "krbtgt/CONTOSO",
+                   "Status": "0x18", "PreAuthType": "2", "IpAddress": "::ffff:192.168.1.77", "IpPort": "50123"}),
+    (4776, False, {"PackageName": "MICROSOFT_AUTHENTICATION_PACKAGE_V1_0", "TargetUserName": "Administrator",
+                   "Workstation": "SRV-FILE", "Status": "0xc000006a"}),
+    (4740, False, {"TargetUserName": "Administrator", "TargetDomainName": "LAPTOP-EXT",
+                   "TargetSid": "S-1-5-21-1-2-3-500", "SubjectUserName": "DC01$", "SubjectDomainName": "CONTOSO"}),
+    # modifiche ai gruppi privilegiati
+    (4732, False, {"MemberName": "-", "MemberSid": "S-1-5-21-1-2-3-1201", "_member": "CONTOSO\\lbianchi",
+                   "TargetUserName": "Administrators", "TargetDomainName": "Builtin", "TargetSid": "S-1-5-32-544",
+                   "SubjectUserName": "mrossi", "SubjectDomainName": "CONTOSO"}),
+    (4728, False, {"MemberName": "CN=Luca Bianchi,OU=Utenti,DC=contoso,DC=local",
+                   "MemberSid": "S-1-5-21-1-2-3-1201", "TargetUserName": "Domain Admins",
+                   "TargetDomainName": "CONTOSO", "TargetSid": "S-1-5-21-1-2-3-512",
+                   "SubjectUserName": "mrossi", "SubjectDomainName": "CONTOSO"}),
+    (4724, False, {"TargetUserName": "Administrator", "TargetDomainName": "CONTOSO",
+                   "TargetSid": "S-1-5-21-1-2-3-500", "SubjectUserName": "mrossi", "SubjectDomainName": "CONTOSO"}),
+    (4648, False, {"SubjectUserName": "mrossi", "SubjectDomainName": "CONTOSO", "TargetUserName": "Administrator",
+                   "TargetDomainName": "CONTOSO", "TargetServerName": "SRV-SQL",
+                   "ProcessName": "C:\\Windows\\System32\\runas.exe", "IpAddress": "-"}),
+    (4778, False, {"AccountName": "mrossi", "AccountDomain": "CONTOSO", "LogonID": "0x5a1b2",
+                   "SessionName": "RDP-Tcp#3", "ClientName": "PC-MARIO", "ClientAddress": "192.168.1.50"}),
+    (4634, False, {"TargetUserName": "mrossi", "TargetDomainName": "CONTOSO", "TargetLogonId": "0x5a1b2",
+                   "LogonType": "10"}),
+    # possibili manomissioni
+    (4719, False, {"SubjectUserName": "mrossi", "SubjectDomainName": "CONTOSO",
+                   "SubcategoryGuid": "{0CCE9215-69AE-11D9-BED3-505054503030}", "AuditPolicyChanges": "%%8448"}),
+    (1102, False, {"SubjectUserSid": "S-1-5-21-1-2-3-1104", "SubjectUserName": "mrossi",
+                   "SubjectDomainName": "CONTOSO", "SubjectLogonId": "0x5a1b2"}),
+]
+
+
+def send_windows(url, token):
+    now = int(time.time() * 1000)
+    base = now * 100   # record id sempre nuovi: ogni esecuzione aggiunge eventi
+    events = [{"rid": base + i, "eid": eid, "t": now - (len(WIN_SAMPLES) - i) * 1000, "elev": elev, "d": d}
+              for i, (eid, elev, d) in enumerate(WIN_SAMPLES)]
+    body = {"host": "DC01", "domain": "contoso.local", "is_dc": True,
+            "os": "Microsoft Windows Server 2022 Standard (10.0.20348)", "ver": "test",
+            "admins": 6, "log_mb": 256, "audit_missing": [], "gap_total": 0, "events": events}
+    req = urllib.request.Request(url.rstrip("/") + "/api/ingest", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": "Bearer " + token})
+    ctx = ssl._create_unverified_context() if url.startswith("https") else None
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+            print("risposta:", r.status, r.read().decode())
+    except urllib.error.HTTPError as e:
+        print("errore:", e.code, e.read().decode())
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("host")
+    ap.add_argument("host", help="IP di fwlog; con --win l'indirizzo della dashboard (https://ip:10443)")
     ap.add_argument("-p", "--port", type=int, default=514)
     ap.add_argument("--tcp", action="store_true")
     ap.add_argument("-n", "--count", type=int, default=0,
                     help="numero di messaggi casuali per una prova di carico")
+    ap.add_argument("--win", metavar="TOKEN",
+                    help="invia eventi di accesso Windows di esempio con il token del server")
     a = ap.parse_args()
+
+    if a.win:
+        send_windows(a.host if "://" in a.host else "https://" + a.host + ":10443", a.win)
+        return
 
     msgs = SAMPLES if not a.count else [random.choice(SAMPLES) for _ in range(a.count)]
     t0 = time.time()
