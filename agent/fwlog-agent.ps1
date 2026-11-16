@@ -35,7 +35,7 @@ $ErrorActionPreference = 'Stop'
 # da "powershell -File" gli elenchi arrivano come un'unica stringa "a,b"
 $ExcludeUser = @($ExcludeUser | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $ExtraAdmin = @($ExtraAdmin | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-$AgentVersion = '1.0'
+$AgentVersion = '1.1'
 $ProgDir = Join-Path $env:ProgramFiles 'fwlog'
 $DataDir = Join-Path $env:ProgramData 'fwlog'
 $ConfigFile = Join-Path $DataDir 'config.json'
@@ -279,12 +279,16 @@ function Get-AuditMissing($Info) {
     try {
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
         & auditpol.exe /backup /file:$tmp | Out-Null
-        $rows = Import-Csv -Path $tmp
+        # le intestazioni del CSV sono tradotte nella lingua di Windows: colonne per posizione
+        # (computer, destinazione, sottocategoria, GUID, inclusione, esclusione, valore)
+        $rows = @(Get-Content -Path $tmp | Select-Object -Skip 1 |
+            ConvertFrom-Csv -Header 'Machine', 'Target', 'Subcategory', 'Guid', 'Inclusion', 'Exclusion', 'Value')
+        if (-not ($rows | Where-Object { $_.Guid -like '{*}' })) { throw 'formato di auditpol /backup non riconosciuto' }
         foreach ($p in $AuditPolicies) {
             if ($p.DcOnly -and -not $Info.is_dc) { continue }
-            $row = $rows | Where-Object { $_.'Subcategory GUID' -eq $p.Guid } | Select-Object -First 1
+            $row = $rows | Where-Object { $_.Guid -eq $p.Guid } | Select-Object -First 1
             $value = 0
-            if ($row) { [void][int]::TryParse([string]$row.'Setting Value', [ref]$value) }
+            if ($row) { [void][int]::TryParse([string]$row.Value, [ref]$value) }
             if (($value -band $p.Need) -ne $p.Need) { $missing += $p.Name }
         }
     } catch {
@@ -320,7 +324,8 @@ function Get-EventQueryXml([bool]$FirstRun) {
     # Windows rifiuta le espressioni XPath con troppi 'or' (circa 22): piu' <Select>, al
     # massimo 10 Event ID ciascuno, che il registro unisce
     $time = ''
-    if ($FirstRun) { $time = " and TimeCreated[timediff(@SystemTime) <= $($FirstRunHours * 3600000)]" }
+    # dentro una query XML il '<' va scritto '&lt;'
+    if ($FirstRun) { $time = " and TimeCreated[timediff(@SystemTime) &lt;= $($FirstRunHours * 3600000)]" }
     $selects = @()
     for ($i = 0; $i -lt $EventIds.Count; $i += 10) {
         $ids = $EventIds[$i..([Math]::Min($i + 9, $EventIds.Count - 1))]
@@ -617,7 +622,8 @@ function Install-Agent {
         $okArgs = @('/set', "/subcategory:$($p.Guid)")
         if ($p.Need -band 1) { $okArgs += '/success:enable' }
         if ($p.Need -band 2) { $okArgs += '/failure:enable' }
-        & auditpol.exe @okArgs | Out-Null
+        $out = & auditpol.exe @okArgs 2>&1
+        if ($LASTEXITCODE -ne 0) { Write-AgentLog ('auditpol non ha impostato {0}: {1}' -f $p.Name, ($out -join ' ')) }
     }
     # le sottocategorie hanno la precedenza sulle categorie legacy
     Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'SCENoApplyLegacyAuditPolicy' -Value 1 -Type DWord
