@@ -1418,6 +1418,43 @@ def build_where(p):
     return " AND ".join(where), args
 
 
+def src_conn(p):
+    """Connessione in sola lettura: al database attivo oppure, con db=backup, al backup
+    aperto per la consultazione ("src" e' gia' il filtro IP sorgente dei log)."""
+    if not p or p.get("db") != "backup":
+        return store.connect(readonly=True)
+    db = bk.stage.get("db") if bk.stage.get("browse") else None
+    if not db or not os.path.exists(db):
+        raise HttpError(409, "nessun backup aperto in consultazione")
+    c = sqlite3.connect(f"file:{quote(db)}?mode=ro", uri=True, timeout=30, check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    return c
+
+
+def browse_info():
+    """Backup aperto per la consultazione (o None)."""
+    st_ = bk.stage
+    if not st_.get("browse") or not st_.get("meta"):
+        return None
+    m = st_["meta"]
+    return {"origin": st_.get("origin"), "created": m.get("created"), "host": m.get("host"), "job": m.get("job"),
+            "contents": m.get("contents"), "counts": m.get("counts")}
+
+
+def api_browse_firewalls(p):
+    """Come /api/firewalls, ma dal backup aperto in consultazione."""
+    now = int(time.time() * 1000)
+    c = src_conn(p)
+    try:
+        rows = c.execute("SELECT id, ip, name, first_seen, last_seen, total, retention_days FROM firewalls "
+                         "WHERE ip NOT LIKE ? ORDER BY name COLLATE NOCASE", (DELETED + "%",)).fetchall()
+        admin = admin_summary(c, now)
+    finally:
+        c.close()
+    return {"now": now, "firewalls": [dict(r, rate=0, deleting=False) for r in rows], "stats": None,
+            "admin": admin, "backup": None, "browse": browse_info()}
+
+
 def api_firewalls():
     c = store.connect(readonly=True)
     try:
@@ -1445,14 +1482,14 @@ def api_firewalls():
                   "queue": store.q.qsize(),
                   "disk_free": du.free, "disk_total": du.total, "db_size": db_size,
                   "retention_days": RETENTION_DAYS},
-        "admin": admin, "backup": backup,
+        "admin": admin, "backup": backup, "browse": browse_info(),
     }
 
 
 def api_logs(p):
     where, args = build_where(p)
     limit = max(1, min(_int(p.get("limit", 200), "limit"), 1000))
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     try:
         rows = c.execute(f"SELECT {LOG_COLS} FROM logs WHERE {where} ORDER BY id DESC LIMIT ?",
                          args + [limit]).fetchall()
@@ -1488,7 +1525,7 @@ def api_logs_delete(p):
 
 def api_logs_csv(p):
     where, args = build_where(p)
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     buf = io.StringIO()
     w = csv.writer(buf)
     cols = [x.strip() for x in LOG_COLS.split(",")]
@@ -1509,7 +1546,7 @@ def api_facets(p):
     fid = _int(p.get("fw"), "fw")
     keys = ("in_if", "out_if", "src_zone", "dst_zone", "action", "proto")
     found = {k: set() for k in keys}
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     try:
         for r in c.execute(f"SELECT {', '.join(keys)} FROM logs WHERE fw_id=? "
                            "ORDER BY id DESC LIMIT 20000", (fid,)):
@@ -1592,9 +1629,9 @@ def build_where_ev(p):
     return " AND ".join(where), args
 
 
-def api_servers():
+def api_servers(p=None):
     now = int(time.time() * 1000)
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     try:
         rows = c.execute("SELECT id, name, created, hostname, domain, ip, is_dc, os, agent, status, "
                          "last_seen, last_event, total, retention_days FROM servers "
@@ -1677,7 +1714,7 @@ def api_server_delete(sid):
 def api_events(p):
     where, args = build_where_ev(p)
     limit = max(1, min(_int(p.get("limit", 200), "limit"), 1000))
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     try:
         rows = c.execute(f"SELECT {EV_COLS} FROM events WHERE {where} ORDER BY ts DESC, id DESC LIMIT ?",
                          args + [limit]).fetchall()
@@ -1690,7 +1727,7 @@ def api_events_csv(p):
     where, args = build_where_ev(p)
     cols = ["ts", "event_id", "kind", "outcome", "critical", "elevated", "account", "domain",
             "logon_type", "src_ip", "src_host", "actor", "target", "reason", "auth", "logon_id", "data"]
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(cols)
@@ -1709,7 +1746,7 @@ def api_events_csv(p):
 def api_events_facets(p):
     sid = _int(p.get("srv"), "srv")
     users, hosts = set(), set()
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     try:
         for r in c.execute("SELECT account, src_host FROM events WHERE srv_id=? "
                            "ORDER BY ts DESC LIMIT 5000", (sid,)):
@@ -1833,7 +1870,7 @@ def admin_query(p, limit):
 def api_admin(p):
     limit = max(1, min(_int(p.get("limit", 200), "limit"), 1000))
     sql, args = admin_query(p, limit)
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     try:
         rows = c.execute(sql, args).fetchall()
     finally:
@@ -1848,7 +1885,7 @@ def api_admin_csv(p):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(cols)
-    c = store.connect(readonly=True)
+    c = src_conn(p)
     try:
         for r in c.execute(sql, args):
             row = [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"] / 1000)), r["dev_name"],
@@ -1860,8 +1897,8 @@ def api_admin_csv(p):
     return buf.getvalue()
 
 
-def api_admin_facets():
-    c = store.connect(readonly=True)
+def api_admin_facets(p=None):
+    c = src_conn(p)
     try:
         srv = [{"id": f"srv-{r[0]}", "name": r[1]} for r in
                c.execute("SELECT id, name FROM servers ORDER BY name COLLATE NOCASE")]
@@ -2913,6 +2950,7 @@ class Backups:
 
     def prepare(self, repo_id, name, password):
         """Scarica (se serve), decifra e decomprime il backup da ripristinare."""
+        self.stage.pop("browse", None)    # un backup in consultazione viene chiuso
         if repo_id is not None:
             self.clear_stage()
             c = store.connect(readonly=True)
@@ -2943,6 +2981,23 @@ class Backups:
         self.phase("decifratura e decompressione" if self.stage["encrypted"] else "decompressione")
         self.stage["meta"] = unpack(self.stage["src"], db, password)
         self.stage["db"] = db
+
+    def open_browse(self):
+        """Prepara il backup decompresso per la consultazione: crea le tabelle mancanti e
+        gli indici (le ricerche sui log restano veloci). I dati non vengono toccati."""
+        meta = self.stage.get("meta")
+        if not meta or not self.stage.get("db"):
+            raise BackupError("prepara prima il backup da consultare")
+        need_space(int(meta["db_size"] * 0.7), "indicizzare il backup")
+        self.phase("indicizzazione per le ricerche")
+        c = sqlite3.connect(self.stage["db"], timeout=30)
+        try:
+            c.executescript(SCHEMA)
+            c.commit()
+        finally:
+            c.close()
+        self.stage["browse"] = True
+        log.info("backup aperto in consultazione: %s", self.stage.get("origin"))
 
     def restore(self, sections, mode):
         meta = self.stage.get("meta")
@@ -2993,6 +3048,7 @@ def api_backup():
     stage = None
     if st_.get("src"):
         stage = {"origin": st_.get("origin"), "encrypted": st_.get("encrypted"), "meta": st_.get("meta"),
+                 "browse": bool(st_.get("browse")),
                  "size": os.path.getsize(st_["src"]) if os.path.exists(st_["src"]) else None}
     du = shutil.disk_usage(DATA_DIR)
     return {"now": int(time.time() * 1000), "host": host_name(), "repos": repos, "jobs": jobs, "runs": runs,
@@ -3203,6 +3259,15 @@ def api_restore_run(d):
     return {"ok": True}
 
 
+def api_restore_browse():
+    if not (bk.stage or {}).get("meta"):
+        raise ValueError("prepara prima il backup da consultare")
+    if bk.stage.get("browse"):
+        return {"ok": True}
+    bk.start("browse", "apertura del backup", bk.open_browse)
+    return {"ok": True}
+
+
 def api_restore_cancel():
     if bk.busy():
         raise HttpError(409, "operazione in corso")
@@ -3341,7 +3406,7 @@ class Web(BaseHTTPRequestHandler):
             with open(os.path.join(STATIC_DIR, "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif u.path == "/api/firewalls":
-            self._send(200, api_firewalls())
+            self._send(200, api_browse_firewalls(p) if p.get("db") == "backup" else api_firewalls())
         elif u.path == "/api/logs":
             self._send(200, api_logs(p))
         elif u.path == "/api/logs.csv":
@@ -3353,7 +3418,7 @@ class Web(BaseHTTPRequestHandler):
         elif u.path == "/api/facets":
             self._send(200, api_facets(p))
         elif u.path == "/api/servers":
-            self._send(200, api_servers())
+            self._send(200, api_servers(p))
         elif u.path == "/api/events":
             self._send(200, api_events(p))
         elif u.path == "/api/events.csv":
@@ -3369,7 +3434,7 @@ class Web(BaseHTTPRequestHandler):
             self._send(200, api_admin_csv(p), "text/csv; charset=utf-8",
                        {"Content-Disposition": f'attachment; filename="{name}"'})
         elif u.path == "/api/admin/facets":
-            self._send(200, api_admin_facets())
+            self._send(200, api_admin_facets(p))
         elif u.path == "/api/backup":
             self._send(200, api_backup())
         elif u.path == "/api/backup/config":
@@ -3498,6 +3563,8 @@ class Web(BaseHTTPRequestHandler):
             return self._send(202, api_restore_prepare(d))
         if path == "/api/restore/run":
             return self._send(202, api_restore_run(d))
+        if path == "/api/restore/browse":
+            return self._send(202, api_restore_browse())
         self._send(404, {"error": "non trovato"})
 
     def _delete(self):
