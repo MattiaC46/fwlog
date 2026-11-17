@@ -122,8 +122,7 @@ equivalenti `imtcp`) e poi `sudo systemctl restart rsyslog`.
 
 ## 4. Installazione
 
-Il repository è privato: per clonarlo serve un accesso GitHub (`gh auth login`, un token
-o una deploy key). In alternativa copia la cartella con `scp`.
+Il repository è pubblico: per clonarlo non servono account GitHub né credenziali.
 
 ```bash
 git clone https://github.com/MattiaC46/fwlog.git
