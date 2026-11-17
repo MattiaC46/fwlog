@@ -123,9 +123,11 @@ equivalenti `imtcp`) e poi `sudo systemctl restart rsyslog`.
 ## 4. Installazione
 
 Il repository è pubblico: per clonarlo non servono account GitHub né credenziali.
+`--branch v1.0` scarica la versione stabile indicata (l'elenco delle versioni è nella
+pagina *Tags* del repository su GitHub); senza, ottieni l'ultima versione in sviluppo.
 
 ```bash
-git clone https://github.com/MattiaC46/fwlog.git
+git clone --branch v1.0 https://github.com/MattiaC46/fwlog.git
 cd fwlog
 sudo ./install.sh
 ```
@@ -242,11 +244,19 @@ sudo firewall-cmd --reload
 
 ## 10. Aggiornamento e manutenzione
 
+Per passare a una nuova versione (es. `v1.1`):
+
 ```bash
-cd fwlog && git pull && sudo ./install.sh
+cd fwlog
+git fetch --tags
+git tag                 # versioni disponibili
+git checkout v1.1
+sudo ./install.sh
 ```
 
-Configurazione, certificato, porta e database non vengono toccati.
+Configurazione, certificato, porta e database non vengono toccati. `git describe --tags`
+mostra la versione presente nella cartella. Con un clone fatto con `--branch` `git pull`
+non funziona (la cartella è ferma su una versione): usa sempre `fetch` e `checkout`.
 
 **Ampliare il disco dati:** aumenta il disco in Proxmox (*Disk Action → Resize*) o in
 Hyper-V (*Impostazioni → disco dati → Modifica → Espandi*; a VM accesa funziona solo con
@@ -291,7 +301,7 @@ rimuove; `install.sh`, eseguito da ogni cliente, li rigenera.
    (salta il § 2).
 2. Copia il repository in una posizione fissa, ad esempio `/root/fwlog`:
    ```bash
-   sudo git clone https://github.com/MattiaC46/fwlog.git /root/fwlog
+   sudo git clone --branch v1.0 https://github.com/MattiaC46/fwlog.git /root/fwlog
    sudo dnf -y install python3 openssl
    ```
 3. Facoltativo: apri già le porte in firewalld (§ 5), valgono anche per i cloni.
@@ -333,4 +343,14 @@ rimuove; `install.sh`, eseguito da ogni cliente, li rigenera.
    `RequiresMountsFor` e genera password e certificato nuovi. Annota la password stampata.
 5. Verifica come al § 7.
 
-Per aggiornare fwlog su un cliente: `cd /root/fwlog && sudo git pull && sudo ./install.sh`.
+Per aggiornare fwlog su un cliente, ad esempio alla `v1.1` (§ 10):
+
+```bash
+cd /root/fwlog
+sudo git fetch --tags
+sudo git checkout v1.1
+sudo ./install.sh
+```
+
+I cloni del template partono dalla versione clonata al punto 2: dopo `install.sh` controlla
+con `git -C /root/fwlog describe --tags` ed eventualmente aggiorna.
