@@ -396,7 +396,7 @@ progress { width: 100%; height: 8px; }
         </div>
         <div class="actions">
           <button class="btn" id="ad-csv" type="button" title="Esporta gli accessi filtrati (massimo 100.000 righe)">Esporta CSV</button>
-          <button class="btn" id="ad-retention" type="button">Conservazione firewall</button>
+          <button class="btn" id="ad-retention" type="button">Conservazione</button>
         </div>
       </header>
       <div class="warns" id="ad-warns"></div>
@@ -404,15 +404,13 @@ progress { width: 100%; height: 8px; }
         <label>Dispositivo <select name="dev" id="af-dev"><option value="">Tutti</option></select></label>
         <label>Utente <input name="user" list="dl-auser" placeholder="es. admin"></label>
         <label>IP di origine <input name="ip" placeholder="IP o CIDR"></label>
-        <label>Evento <select name="kind" id="af-kind"><option value="">Tutti</option></select></label>
-        <label>Esito <select name="outcome"><option value="">Tutti</option><option value="ok">Riuscito</option><option value="fail">Fallito</option></select></label>
         <label class="wide">Testo <input name="q" placeholder="cerca in tutti i campi"></label>
         <label>Da <input name="from" type="datetime-local" step="1"></label>
         <label>A <input name="to" type="datetime-local" step="1"></label>
         <div class="f-actions">
           <button class="btn primary" type="submit">Applica filtri</button>
           <button class="btn" type="button" id="ab-reset">Azzera</button>
-          <span class="hint">Accessi ai server Windows e login degli amministratori ai firewall (GUI, SSH, console). CIDR ammesso, ! per escludere.</span>
+          <span class="hint">Solo accessi riusciti con privilegi di amministratore: server Windows e login ai firewall (GUI, SSH, console). Gli altri eventi sono nelle pagine dei server e nei log dei firewall. CIDR ammesso, ! per escludere.</span>
         </div>
         <datalist id="dl-auser"></datalist>
       </form>
@@ -640,7 +638,8 @@ progress { width: 100%; height: 8px; }
     </div>
     <fieldset>
       <legend>Cosa salvare</legend>
-      <label class="c"><input type="checkbox" name="c_admin" checked> <span>Accessi amministratori<small>Server Windows e login ai firewall: il registro da conservare per legge. Pochi MB.</small></span></label>
+      <label class="c"><input type="checkbox" name="c_admin" checked> <span>Accessi amministratori<small>Solo il registro: accessi admin ai server e login ai firewall, da conservare per legge. Pochi MB.</small></span></label>
+      <label class="c"><input type="checkbox" name="c_server"> <span>Log dei server<small>Tutti gli eventi dei server Windows (anche disconnessioni, accessi falliti, gruppi).</small></span></label>
       <label class="c"><input type="checkbox" name="c_firewall"> <span>Log dei firewall<small>Tutto il traffico registrato: può occupare molti GB. Meglio un job separato, meno frequente.</small></span></label>
       <span class="muted small">Sempre inclusi: destinazioni, job, impostazioni, certificato TLS e fwlog.env (per ricostruire la macchina da zero).</span>
     </fieldset>
@@ -708,9 +707,10 @@ progress { width: 100%; height: 8px; }
       <fieldset>
         <legend>Cosa ripristinare</legend>
         <label class="c" data-sec="admin"><input type="checkbox" name="s_admin"> <span>Accessi amministratori<small id="rs-admin-n"></small></span></label>
-        <div class="opts" data-sec="admin" style="margin:0 0 0 26px">
-          <label class="opt"><input type="radio" name="mode" value="merge" checked><span>Aggiungi gli accessi mancanti<small>Non elimina nulla: utile per recuperare accessi persi o già scaduti.</small></span></label>
-          <label class="opt"><input type="radio" name="mode" value="replace"><span>Torna esattamente al backup<small>Server e accessi registrati dopo il backup vengono eliminati.</small></span></label>
+        <label class="c" data-sec="server"><input type="checkbox" name="s_server"> <span>Log dei server<small id="rs-srv-n"></small></span></label>
+        <div class="opts" id="rs-mode" style="margin:0 0 0 26px">
+          <label class="opt"><input type="radio" name="mode" value="merge" checked><span>Aggiungi i dati mancanti<small>Non elimina nulla: utile per recuperare accessi persi o già scaduti.</small></span></label>
+          <label class="opt"><input type="radio" name="mode" value="replace"><span>Torna esattamente al backup<small>Accessi ed eventi registrati dopo il backup vengono eliminati.</small></span></label>
         </div>
         <label class="c" data-sec="firewall"><input type="checkbox" name="s_firewall"> <span>Log dei firewall<small id="rs-fw-n"></small></span></label>
         <label class="c" data-sec="config"><input type="checkbox" name="s_config"> <span>Configurazione dei backup<small>Destinazioni, job e impostazioni: aggiunti o aggiornati per nome, non elimina nulla.</small></span></label>
@@ -857,13 +857,13 @@ function renderNav() {
   $("#nav-admin").setAttribute("aria-current", String(st.page === "admin"));
   $("#nav-backup").setAttribute("aria-current", String(st.page === "backup"));
   if (a) {
-    const short = [a.fw_retention_days, a.win_retention_days].some((d) => d > 0 && d < 180);
+    const short = a.retention_days > 0 && a.retention_days < 180;
     $("#nav-admin-dot").className = "dot" + (short ? " warn" : " ok");
     $("#nav-admin-dot").title = short ? "Conservazione inferiore a 6 mesi" : "Conservazione di almeno 6 mesi";
     const r = $("#nav-admin-r");
-    r.textContent = a.fail_24h ? nf.format(a.fail_24h) + " falliti" : "";
-    r.className = "fw-rate" + (a.fail_24h ? " bad" : "");
-    r.title = a.fail_24h ? "Accessi falliti nelle ultime 24 ore" : "";
+    r.textContent = a.logon_24h ? nf.format(a.logon_24h) + "/24h" : "";
+    r.className = "fw-rate";
+    r.title = a.logon_24h ? "Accessi admin nelle ultime 24 ore" : "";
   }
   if (b) {
     let dot = "", right = "", rcls = "", sub;
@@ -1321,7 +1321,7 @@ function openRetention(ctx) {
   const f = ctx.item;
   retSel.options[0].textContent = "Predefinita (" + daysText(ctx.def) + ")";
   $("#ret-text").textContent = ctx.kind === "server"
-    ? "Per quanto tempo tenere gli accessi registrati su «" + f.name + "». Per gli amministratori di sistema il Garante privacy chiede almeno 6 mesi."
+    ? "Per quanto tempo tenere gli eventi di «" + f.name + "» diversi dagli accessi admin (disconnessioni, accessi falliti, gruppi...). Gli accessi admin seguono la conservazione del registro Accessi amministratori."
     : "Per quanto tempo tenere i log di «" + f.name + "».";
   const r = f.retention_days;
   const preset = r == null ? "" : [...retSel.options].some((o) => o.value === String(r)) ? String(r) : "custom";
@@ -1588,7 +1588,8 @@ function renderServer(s) {
   if (s.is_dc) parts.push("controller di dominio");
   if (s.os) parts.push(s.os);
   parts.push(nf.format(s.total) + " eventi");
-  parts.push("conservazione " + (s.retention_days == null ? daysText(st.srvRetention) + " (predefinita)" : daysText(s.retention_days)));
+  parts.push("conservazione eventi " + (s.retention_days == null ? daysText(st.srvRetention) + " (predefinita)" : daysText(s.retention_days)) +
+    ", accessi admin " + (st.admin ? daysText(st.admin.retention_days) : "—"));
   if (s.status && s.status.admins) parts.push(nf.format(s.status.admins) + " account admin monitorati");
   parts.push(s.last_seen == null ? "mai contattato" : "ultimo contatto " + fmtAgo(st.now - s.last_seen));
   $("#sv-info").textContent = parts.join(" · ");
@@ -1916,7 +1917,6 @@ dlgAdd.addEventListener("close", () => { asData = null; $("#as-cmd").textContent
 
 const ad = { rows: [], more: false, filters: {}, seq: 0, dev: null };
 const aForm = $("#afilters");
-for (const [k, v] of Object.entries(KIND)) addOpt($("#af-kind"), k, v);
 $("#nav-admin").addEventListener("click", () => { location.hash = "admin"; });
 $("#nav-backup").addEventListener("click", () => { location.hash = "backup"; });
 $("#b-admin").addEventListener("click", () => {
@@ -1951,18 +1951,15 @@ function renderAdminHead() {
   const a = st.admin, b = st.backup;
   const info = [];
   if (a) {
-    info.push("Conservazione: server " + daysText(a.win_retention_days) + " (predefinita, modificabile per server)");
-    info.push("login ai firewall " + daysText(a.fw_retention_days));
-    if (a.fail_24h) info.push(nf.format(a.fail_24h) + " accessi falliti nelle ultime 24 ore");
+    info.push("Conservazione " + daysText(a.retention_days) + (a.retention_set == null ? " (predefinita)" : ""));
+    info.push(nf.format(a.logon_24h) + " accessi nelle ultime 24 ore");
   }
   $("#ad-info").textContent = info.join(" · ");
   const box = $("#ad-warns");
   box.replaceChildren();
   const add = (t, bad) => box.append(el("p", "warn-box" + (bad ? " bad" : ""), t));
   if (a) {
-    for (const [d, what] of [[a.fw_retention_days, "dei login ai firewall"], [a.win_retention_days, "predefinita dei server"]]) {
-      if (d > 0 && d < 180) add("Il Garante privacy chiede di conservare gli accessi degli amministratori per almeno 6 mesi: la conservazione " + what + " è di " + daysText(d) + ".", true);
-    }
+    if (a.retention_days > 0 && a.retention_days < 180) add("Il Garante privacy chiede di conservare gli accessi degli amministratori per almeno 6 mesi: la conservazione del registro è di " + daysText(a.retention_days) + ".", true);
   }
   if (b && !b.admin_covered) add("Nessun job di backup attivo salva questo registro fuori dalla VM. Configuralo nella pagina Backup.");
   document.title = "Accessi amministratori · fwlog";
@@ -2010,8 +2007,7 @@ function adRow(r) {
   dv.append(vbtn("dev", (r.dt === "srv" ? "srv-" : "fw-") + r.dev_id, r.dev_name || r.dev_id),
     el("span", "tag", r.dt === "srv" ? "server" : "firewall"));
   const k = td();
-  k.append(vbtn("kind", r.kind, KIND[r.kind] || r.kind,
-    "badge " + (r.critical ? "crit" : r.outcome === "ok" ? "allow" : r.outcome === "fail" ? "deny" : "")));
+  k.append(el("span", "badge " + (r.outcome === "ok" ? "allow" : r.outcome === "fail" ? "deny" : ""), KIND[r.kind] || r.kind));
   const u = td();
   if (r.account) {
     if (r.domain) u.append(el("span", "muted", r.domain + "\\"));
@@ -2091,9 +2087,9 @@ $("#ad-csv").addEventListener("click", () => { location.href = "/api/admin.csv?"
 $("#ad-retention").addEventListener("click", () => {
   const a = st.admin;
   if (!a) return;
-  openRetention({ url: "/api/admin/settings", kind: "registro", err: showAdError, def: a.fw_retention_default,
-    item: { name: "login ai firewall", retention_days: a.fw_retention_set } });
-  $("#ret-text").textContent = "Per quanto tempo tenere i login degli amministratori ai firewall, indipendentemente dai log del firewall. Il Garante privacy chiede almeno 6 mesi.";
+  openRetention({ url: "/api/admin/settings", kind: "registro", err: showAdError, def: a.retention_default,
+    item: { name: "registro", retention_days: a.retention_set } });
+  $("#ret-text").textContent = "Per quanto tempo tenere gli accessi degli amministratori (server e firewall), indipendentemente dagli altri eventi e dai log. Il Garante privacy chiede almeno 6 mesi.";
 });
 
 function updateAFoot() {
@@ -2140,7 +2136,7 @@ $("#a-more").addEventListener("click", async () => {
 /* ---------------- backup ---------------- */
 
 const bk = { data: null, timer: null, msg: null };
-const CONTENT = { admin: "Accessi admin", firewall: "Log firewall", config: "Configurazione" };
+const CONTENT = { admin: "Accessi admin", server: "Log server", firewall: "Log firewall", config: "Configurazione" };
 const RTYPE = { local: "Cartella", s3: "S3", smb: "SMB" };
 const WEEK = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"];
 
@@ -2411,6 +2407,7 @@ function openJob(j) {
     sel.value = String(j.repo_id);
     f.c_admin.checked = j.contents.includes("admin");
     f.c_firewall.checked = j.contents.includes("firewall");
+    f.c_server.checked = j.contents.includes("server");
     const s = j.schedule;
     f.freq.value = s.freq;
     f.time.value = s.time || "02:30";
@@ -2440,6 +2437,7 @@ jbForm.addEventListener("submit", async (e) => {
   if (f.encrypt.checked && !f.password.value && !(jbEdit && jbEdit.encrypted)) return err("Indica la password di cifratura.");
   const contents = [];
   if (f.c_admin.checked) contents.push("admin");
+  if (f.c_server.checked) contents.push("server");
   if (f.c_firewall.checked) contents.push("firewall");
   const days = [];
   for (let i = 1; i <= 7; i++) if (f["d" + i].checked) days.push(i);
@@ -2572,8 +2570,12 @@ function rsMeta(m, origin) {
   row("Creato", fmtFull(m.created).slice(0, -4) + " su " + m.host + (m.job ? " (job «" + m.job + "»)" : ""));
   const c = m.counts || {}, r = m.ranges || {};
   const range = (t) => r[t] ? " dal " + fmtFull(r[t][0]).slice(0, 10) + " al " + fmtFull(r[t][1]).slice(0, 10) : "";
+  if (m.contents.includes("server")) {
+    $("#rs-srv-n").textContent = nf.format(c.events || 0) + " eventi di " + nf.format(c.servers || 0) + " server" + range("events");
+  }
   if (m.contents.includes("admin")) {
-    $("#rs-admin-n").textContent = nf.format(c.events || 0) + " eventi di " + nf.format(c.servers || 0) + " server" + range("events") +
+    $("#rs-admin-n").textContent = (m.contents.includes("server") ? "accessi admin dei server (tra gli eventi qui sotto)"
+      : nf.format(c.events || 0) + " accessi admin ai server" + range("events")) +
       " · " + nf.format(c.fw_admin || 0) + " login ai firewall" + range("fw_admin");
   }
   if (m.contents.includes("firewall")) {
@@ -2581,7 +2583,7 @@ function rsMeta(m, origin) {
       ". Sostituiscono tutti i log attuali; durante il ripristino i nuovi log restano in coda.";
   }
   const f = rsForm.elements;
-  for (const sec of ["admin", "firewall", "config"]) {
+  for (const sec of ["admin", "server", "firewall", "config"]) {
     const has = m.contents.includes(sec);
     for (const e of dlgRs.querySelectorAll("[data-sec=" + sec + "]")) e.hidden = !has;
     f["s_" + sec].checked = has && (sec === "admin" || (sec === "config" && !(bk.data && bk.data.jobs.length)));
@@ -2592,11 +2594,14 @@ function rsMeta(m, origin) {
 function rsWarn() {
   const f = rsForm.elements, m = bk.data && bk.data.stage && bk.data.stage.meta;
   const parts = [];
-  if (f.s_admin.checked && f.mode.value === "replace" && m) parts.push("Server e accessi registrati dopo il " + fmtFull(m.created).slice(0, -4) + " verranno eliminati.");
+  $("#rs-mode").hidden = !(f.s_admin.checked || f.s_server.checked);
+  if ((f.s_admin.checked || f.s_server.checked) && f.mode.value === "replace" && m) {
+    parts.push((f.s_server.checked ? "Server ed eventi" : "Accessi admin") + " registrati dopo il " + fmtFull(m.created).slice(0, -4) + " verranno eliminati.");
+  }
   if (f.s_firewall.checked) parts.push("I log dei firewall attuali verranno sostituiti da quelli del backup.");
   parts.push("I dati più vecchi della conservazione impostata vengono eliminati entro un minuto: per consultare log vecchi aumenta prima la conservazione.");
   $("#rs-warn").textContent = parts.join(" ");
-  $("#rs-run").disabled = !(f.s_admin.checked || f.s_firewall.checked || f.s_config.checked);
+  $("#rs-run").disabled = !(f.s_admin.checked || f.s_server.checked || f.s_firewall.checked || f.s_config.checked);
 }
 rsForm.addEventListener("change", (e) => { if (rs.step === "pick" && e.target.name !== "from") rsWarn(); });
 
@@ -2657,7 +2662,7 @@ $("#rs-next").addEventListener("click", async () => {
 
 $("#rs-run").addEventListener("click", async () => {
   const f = rsForm.elements, sections = [];
-  for (const s of ["admin", "firewall", "config"]) if (f["s_" + s].checked && !f["s_" + s].closest("[hidden]")) sections.push(s);
+  for (const s of ["admin", "server", "firewall", "config"]) if (f["s_" + s].checked && !f["s_" + s].closest("[hidden]")) sections.push(s);
   if (!sections.length) return;
   rsErr(null);
   try {

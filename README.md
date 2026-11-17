@@ -423,8 +423,10 @@ powershell -ExecutionPolicy Bypass -File $a -Uninstall   # rimozione
 
 ### Conservazione e Garante privacy
 
-Gli accessi dei server sono conservati per **365 giorni** (`FWLOG_WIN_RETENTION_DAYS`,
-modificabile per ogni server con **Conservazione**). Il provvedimento del Garante sugli
+Gli accessi riusciti degli amministratori seguono la conservazione del **registro accessi**
+(sezione 6, 365 giorni di default); tutti gli altri eventi dei server quella del server
+(`FWLOG_WIN_RETENTION_DAYS`, 365 giorni, modificabile per ogni server con
+**Conservazione**: si può ridurre senza toccare il registro). Il provvedimento del Garante sugli
 amministratori di sistema (27/11/2008) chiede di registrare gli accessi degli
 amministratori e di conservarli per almeno **6 mesi**, in modo completo e inalterabile.
 fwlog li tiene su una macchina separata, con credenziali diverse da quelle degli
@@ -439,22 +441,27 @@ non ce ne sono più, gli accessi dei server.
 
 ## 6. Registro accessi amministratori
 
-**Accessi amministratori**, in cima alla barra laterale, raccoglie in un'unica tabella:
+**Accessi amministratori**, in cima alla barra laterale, raccoglie in un'unica tabella
+solo gli **accessi riusciti con privilegi di amministratore**:
 
-- gli eventi dei **server Windows** (sezione 5);
-- i **login degli amministratori ai firewall** (GUI web, SSH, console, Winbox), riconosciuti
-  nei syslog e copiati nel registro.
+- dai **server Windows**: gli eventi «Accesso» con l'etichetta *admin* (token elevato);
+- dai **firewall**: i login riusciti degli amministratori (GUI web, SSH, console, Winbox),
+  riconosciuti nei syslog e copiati nel registro.
+
+Tutto il resto (disconnessioni, accessi falliti, modifiche ai gruppi, login falliti ai
+firewall...) resta nella pagina del server o nei log del firewall, con la loro
+conservazione.
 
 | Firewall | Cosa viene riconosciuto |
 |---|---|
-| pfSense, OPNsense | login riusciti e falliti alla GUI (`Successful login`, `authentication error`, audit OPNsense), logout; SSH |
-| FortiGate | eventi di sistema `Admin login successful/failed`, `Admin logout` (GUI, SSH, console) |
-| Sophos Firewall | eventi `Admin`/`GUI`/`CLI`/`SSH` di login, login fallito e logout |
-| SonicWall | `Administrator login allowed/denied`, `Administrator logged out` |
-| MikroTik | `user ... logged in/out ... via winbox/ssh/web`, `login failure` (topic `system,account`, attivo di default) |
-| Cisco ASA/FTD | `%ASA-6-605005` (permesso), `605004` (negato), `611103` (logout) |
-| Palo Alto | log SYSTEM `User ... logged in/out via ...`, `failed authentication` (inoltrare i log SYSTEM al server syslog) |
-| Linux / UniFi / altri | OpenSSH: `Accepted`, `Failed password`, `Disconnected from user` |
+| pfSense, OPNsense | login alla GUI (`Successful login`, audit OPNsense `authenticated successfully`); SSH |
+| FortiGate | eventi di sistema `Admin login successful` (GUI, SSH, console) |
+| Sophos Firewall | eventi `Admin`/`GUI`/`CLI`/`SSH` di login riuscito |
+| SonicWall | `Administrator login allowed` |
+| MikroTik | `user ... logged in ... via winbox/ssh/web` (topic `system,account`, attivo di default) |
+| Cisco ASA/FTD | `%ASA-6-605005` (login permesso) |
+| Palo Alto | log SYSTEM `User ... logged in via ...` (inoltrare i log SYSTEM al server syslog) |
+| Linux / UniFi / altri | OpenSSH: `Accepted password/publickey ...` |
 
 Il firewall deve inviare anche i suoi **eventi di sistema**, non solo il traffico: su
 FortiGate gli eventi di sistema (`config log eventfilter` → `set system enable`, attivo di
@@ -462,14 +469,14 @@ default) con severità almeno `information` nel filtro syslog; su pfSense e OPNs
 di sistema e di autenticazione oltre a quelli del firewall; su Palo Alto il log forwarding
 dei log *System*.
 
-Il registro ha una **conservazione separata** da quella dei log: si possono tenere i log
-del traffico 30–90 giorni e gli accessi admin un anno. Per i login ai firewall si imposta
-con **Conservazione firewall** (predefinita `FWLOG_ADMIN_RETENTION_DAYS`, 365 giorni); per
-i server vale quella di ogni server. **Elimina log** ed **Elimina firewall** non toccano
-il registro. Con il disco pieno il registro viene eliminato per ultimo.
+Il registro ha una **conservazione propria** (pulsante **Conservazione**, predefinita
+`FWLOG_ADMIN_RETENTION_DAYS`, 365 giorni), che vale sia per gli accessi ai server sia per i
+login ai firewall. La **Conservazione** di ogni server e quella dei firewall valgono per
+tutti gli altri eventi e log: si possono tenere log e altri eventi 30–90 giorni e gli
+accessi admin un anno. **Elimina log** ed **Elimina firewall** non toccano il registro.
+Con il disco pieno il registro viene eliminato per ultimo.
 
-Filtri per dispositivo, utente, IP di origine (CIDR, `!` per escludere), tipo di evento,
-esito e periodo; **Esporta CSV** produce l'estratto da consegnare in caso di verifica.
+Filtri per dispositivo, utente, IP di origine (CIDR, `!` per escludere), testo e periodo; **Esporta CSV** produce l'estratto da consegnare in caso di verifica.
 Dalla pagina di un firewall, **Accessi admin** apre il registro già filtrato.
 
 I formati dei login sono stati scritti dalla documentazione dei produttori: se un login
@@ -527,7 +534,7 @@ Tutto in `/etc/fwlog/fwlog.env`; dopo una modifica: `sudo systemctl restart fwlo
 | `FWLOG_TLS_CERT`, `FWLOG_TLS_KEY` | `/etc/fwlog/tls.*` | certificato; se vuoti la dashboard è in HTTP |
 | `FWLOG_RETENTION_DAYS` | `90` | conservazione predefinita in giorni, `0` = senza limite; ogni firewall può averne una propria dalla dashboard |
 | `FWLOG_WIN_RETENTION_DAYS` | `365` | conservazione predefinita degli accessi dei server Windows, `0` = senza limite; modificabile per ogni server |
-| `FWLOG_ADMIN_RETENTION_DAYS` | come `FWLOG_WIN_RETENTION_DAYS` | conservazione predefinita dei login degli amministratori ai firewall nel registro accessi; modificabile dalla dashboard |
+| `FWLOG_ADMIN_RETENTION_DAYS` | come `FWLOG_WIN_RETENTION_DAYS` | conservazione predefinita del registro accessi amministratori (accessi admin ai server e login ai firewall); modificabile dalla dashboard |
 | `FWLOG_MIN_FREE_GB` | `2` | sotto questo spazio libero vengono eliminati i log più vecchi |
 | `FWLOG_ALLOWED_SOURCES` | vuoto | IP/subnet ammessi a inviare syslog (firewall, switch), es. `192.168.1.1,10.0.0.0/24`; vuoto = tutti. Le voci non valide vengono ignorate e segnalate nel journal e nella dashboard |
 | `FWLOG_QUEUE_MAX` | `200000` | messaggi in attesa di scrittura; oltre vengono scartati |
@@ -655,8 +662,8 @@ anche se qualcuno li cancella: è il modo più semplice per avere copie non modi
 
 Ogni job sceglie:
 
-- **cosa**: *Accessi amministratori* (il registro, pochi MB) e/o *Log dei firewall* (anche
-  molti GB). La configurazione (destinazioni, job, impostazioni, certificato TLS e
+- **cosa**: *Accessi amministratori* (solo il registro, pochi MB), *Log dei server* (tutti
+  gli eventi dei server Windows) e/o *Log dei firewall* (anche molti GB). La configurazione (destinazioni, job, impostazioni, certificato TLS e
   `fwlog.env`) è sempre inclusa;
 - **dove**: una destinazione;
 - **quando**: ogni giorno, alcuni giorni della settimana, un giorno del mese, ogni N ore
@@ -700,9 +707,11 @@ sqlite3 backup.db "SELECT * FROM fw_admin LIMIT 10"
 **Ripristina…**: scegli un backup da una destinazione (oppure carica un file `.fwbk`),
 inserisci la password se è cifrato, poi cosa ripristinare:
 
-- **Accessi amministratori**: *aggiungi gli accessi mancanti* (non elimina nulla, utile per
-  recuperare accessi persi) oppure *torna esattamente al backup* (server e accessi
-  registrati dopo vengono eliminati). I token degli agenti Windows restano validi;
+- **Accessi amministratori**: solo il registro (gli altri eventi dei server non si
+  toccano); **Log dei server**: tutti gli eventi e i server. Per entrambi: *aggiungi i dati
+  mancanti* (non elimina nulla, utile per recuperare accessi persi) oppure *torna
+  esattamente al backup* (quanto registrato dopo viene eliminato). I token degli agenti
+  Windows restano validi;
 - **Log dei firewall**: tutti i log attuali vengono sostituiti da quelli del backup.
   Intanto i log in arrivo restano in coda e vengono salvati alla fine;
 - **Configurazione dei backup**: destinazioni e job aggiunti o aggiornati per nome.
@@ -784,8 +793,8 @@ python3 test-sender.py 127.0.0.1 -p 5514
   stesso NAT risultano uno solo; un firewall che cambia IP compare come nuovo.
 - Niente syslog su TLS (porta 6514).
 - Un solo utente per la dashboard.
-- Registro accessi: i login ai firewall sono riconosciuti solo per i formati elencati
-  nella sezione 6 e solo se il firewall invia anche gli eventi di sistema.
+- Registro accessi: solo accessi riusciti. I login ai firewall sono riconosciuti solo per
+  i formati elencati nella sezione 6 e solo se il firewall invia anche gli eventi di sistema.
 - Durante un backup la ricezione continua: nelle prove, a 3.000 e 8.000 msg/s costanti
   nessun messaggio perso; con raffiche estreme (decine di migliaia di msg/s su 2 CPU) il
   kernel può scartare parte dei pacchetti UDP (meglio TCP, o pianificare di notte).

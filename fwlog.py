@@ -800,6 +800,7 @@ CREATE INDEX IF NOT EXISTS ix_events_srv_ts ON events(srv_id, ts);
 CREATE INDEX IF NOT EXISTS ix_events_src ON events(src_n);
 CREATE INDEX IF NOT EXISTS ix_events_account ON events(account COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS ix_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS ix_events_adm ON events(ts) WHERE kind = 'logon' AND elevated = 1;
 CREATE TABLE IF NOT EXISTS fw_admin(
     id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, fw_ip TEXT NOT NULL, fw_name TEXT,
     kind TEXT, outcome TEXT, account TEXT, src_ip TEXT, src_n TEXT, method TEXT, reason TEXT,
@@ -829,6 +830,9 @@ INSERT_EV = ("INSERT OR IGNORE INTO events(ts,rx,srv_id,chan,record_id,event_id,
              "reason,auth,logon_id,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 INSERT_ADM = ("INSERT INTO fw_admin(ts,fw_ip,fw_name,kind,outcome,account,src_ip,src_n,method,"
               "reason,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+# accessi riusciti con privilegi di amministratore: gli unici eventi dei server che
+# fanno parte del registro accessi admin (conservazione e backup propri)
+ADM_EV = "kind = 'logon' AND elevated = 1"
 # (tabella, tabella proprietaria, colonna di collegamento)
 LOG_TBL = ("logs", "firewalls", "fw_id")
 EV_TBL = ("events", "servers", "srv_id")
@@ -840,8 +844,9 @@ def get_setting(conn, k, default=None):
 
 
 def admin_retention(conn):
-    """Conservazione dei login admin ai firewall: impostata dalla dashboard o predefinita."""
-    v = get_setting(conn, "fw_admin_retention_days")
+    """Conservazione del registro accessi admin (accessi admin ai server e login ai
+    firewall): impostata dalla dashboard o predefinita."""
+    v = get_setting(conn, "admin_retention_days")
     return ADMIN_RETENTION_DAYS if v is None else int(v)
 
 
@@ -1047,7 +1052,8 @@ class Store:
                     a = parse_admin(prog, body)
                 except Exception:
                     a = None
-                if a:
+                if a and a["kind"] == "logon":
+                    # nel registro solo gli accessi riusciti; falliti e logout restano nei log
                     adm.append(admin_row(ts, ip, self._fw_name(conn, fid), a, text))
             conn.executemany(INSERT, out)
             if adm:
@@ -1147,17 +1153,30 @@ class Store:
                 conn.execute("DELETE FROM firewalls")
                 copy("firewalls")
                 copy("logs")
-            if "admin" in sections:
+            if "server" in sections:
                 if mode == "merge":
                     copy("servers", "INSERT OR IGNORE")
                     copy("events", "INSERT OR IGNORE", skip=("id",))
-                    copy("fw_admin", skip=("id",), tail="AS x WHERE NOT EXISTS (SELECT 1 FROM main.fw_admin a "
-                         "WHERE a.fw_ip = x.fw_ip AND a.ts = x.ts AND coalesce(a.raw, '') = coalesce(x.raw, ''))")
                 else:
-                    for t in ("events", "fw_admin", "servers"):
-                        conn.execute(f"DELETE FROM main.{t}")
-                    for t in ("servers", "events", "fw_admin"):
-                        copy(t)
+                    conn.execute("DELETE FROM main.events")
+                    conn.execute("DELETE FROM main.servers")
+                    copy("servers")
+                    copy("events")
+            if "admin" in sections:
+                # solo il registro: accessi admin ai server e login ai firewall. I server
+                # mancanti vengono aggiunti, gli altri eventi dei server non si toccano.
+                copy("servers", "INSERT OR IGNORE")
+                if mode != "merge":
+                    if "server" not in sections:
+                        conn.execute(f"DELETE FROM main.events WHERE {ADM_EV}")
+                    conn.execute("DELETE FROM main.fw_admin")
+                ev_out = out.get("events", 0)
+                copy("events", "INSERT OR IGNORE", skip=("id",), tail=f"WHERE {ADM_EV}")
+                out["events"] = out.get("events", 0) + ev_out
+                copy("fw_admin", skip=("id",), tail="AS x WHERE x.kind = 'logon' AND NOT EXISTS (SELECT 1 FROM "
+                     "main.fw_admin a WHERE a.fw_ip = x.fw_ip AND a.ts = x.ts AND coalesce(a.raw, '') = "
+                     "coalesce(x.raw, ''))")
+            if "server" in sections or "admin" in sections:
                 if "sqlite_sequence" in have:
                     r = conn.execute("SELECT seq FROM b.sqlite_sequence WHERE name='servers'").fetchone()
                     if r:
@@ -1270,16 +1289,21 @@ class Store:
             if row:
                 deleted += self._delete_where(conn, fid, "fw_id = ? AND id <= ?",
                                               [fid, row[0]], DEL_BLOCK * 10)
-        # Eventi dei server Windows: per data dell'evento (indice srv_id, ts)
+        # Eventi dei server Windows, per data dell'evento (indice srv_id, ts): gli accessi
+        # admin seguono la conservazione del registro, gli altri quella del server
+        adm_days = admin_retention(conn)
+        adm_cut = int((now - adm_days * 86400) * 1000)
         for sid, days in conn.execute("SELECT id, retention_days FROM servers").fetchall():
             days = WIN_RETENTION_DAYS if days is None else days
-            if days <= 0:
-                continue
-            cutoff = int((now - days * 86400) * 1000)
-            deleted += self._delete_where(conn, sid, "srv_id = ? AND ts < ?", [sid, cutoff],
-                                          DEL_BLOCK * 10, EV_TBL)
+            if days > 0:
+                cutoff = int((now - days * 86400) * 1000)
+                deleted += self._delete_where(conn, sid, f"srv_id = ? AND ts < ? AND NOT ({ADM_EV})",
+                                              [sid, cutoff], DEL_BLOCK * 10, EV_TBL)
+            if adm_days > 0:
+                deleted += self._delete_where(conn, sid, f"srv_id = ? AND ts < ? AND {ADM_EV}",
+                                              [sid, adm_cut], DEL_BLOCK * 10, EV_TBL)
         # Login degli amministratori ai firewall (registro accessi admin)
-        days = admin_retention(conn)
+        days = adm_days
         if days > 0:
             deleted += conn.execute("DELETE FROM fw_admin WHERE id IN (SELECT id FROM fw_admin WHERE ts < ? "
                                     "ORDER BY ts LIMIT ?)", (int((now - days * 86400) * 1000),
@@ -1290,8 +1314,8 @@ class Store:
         for _ in range(20):
             if shutil.disk_usage(DATA_DIR).free >= MIN_FREE_GB * 1024 ** 3:
                 break
-            n = (self._drop_oldest(conn, 50000) or self._drop_oldest(conn, 50000, EV_TBL)
-                 or self._drop_oldest_admin(conn, 50000))
+            n = (self._drop_oldest(conn, 50000) or self._drop_events(conn, 50000, False)
+                 or self._drop_oldest_admin(conn, 50000) or self._drop_events(conn, 50000, True))
             conn.execute("PRAGMA incremental_vacuum").fetchall()
             self._checkpoint(conn)
             deleted += n
@@ -1308,6 +1332,22 @@ class Store:
         # busy_timeout) bloccando la scrittura dei log: basta un checkpoint passivo
         mode = "PASSIVE" if self.snapshot else "TRUNCATE"
         conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchall()
+
+    @staticmethod
+    def _drop_events(conn, n, admin):
+        """Elimina gli n eventi dei server piu' vecchi: prima quelli fuori dal registro
+        accessi admin, poi (admin=True) gli accessi admin."""
+        cond = ADM_EV if admin else f"NOT ({ADM_EV})"
+        rows = conn.execute(f"SELECT id, srv_id FROM events WHERE {cond} ORDER BY ts LIMIT ?", (n,)).fetchall()
+        if not rows:
+            return 0
+        counts = {}
+        for _, sid in rows:
+            counts[sid] = counts.get(sid, 0) + 1
+        conn.executemany("DELETE FROM events WHERE id=?", [(r[0],) for r in rows])
+        conn.executemany("UPDATE servers SET total=max(0, total-?) WHERE id=?", [(c, s) for s, c in counts.items()])
+        conn.commit()
+        return len(rows)
 
     @staticmethod
     def _drop_oldest_admin(conn, n):
@@ -1722,7 +1762,8 @@ ADM_FW = ("SELECT 'fw' AS dt, a.id, a.ts, a.fw_ip AS dev_id, coalesce(f.name, a.
 def _adm_where(p, dt):
     """Condizioni di un ramo (server o firewall) del registro; None = ramo escluso."""
     a = "e" if dt == "srv" else "a"
-    where, args = [], []
+    # solo accessi riusciti con privilegi di amministratore
+    where, args = (["e.kind = 'logon'", "e.elevated = 1"] if dt == "srv" else ["a.kind = 'logon'"]), []
 
     def add(name, sql, xs):
         neg = p[name].strip().startswith("!")
@@ -1840,12 +1881,11 @@ def api_admin_facets():
 
 def admin_summary(c, now):
     day = now - 86400000
-    fail = c.execute("SELECT (SELECT count(*) FROM events WHERE ts >= ? AND outcome = 'fail') + "
-                     "(SELECT count(*) FROM fw_admin WHERE ts >= ? AND outcome = 'fail')", (day, day)).fetchone()[0]
-    fw_total = c.execute("SELECT count(*) FROM fw_admin").fetchone()[0]
-    v = get_setting(c, "fw_admin_retention_days")
-    return {"fail_24h": fail, "fw_total": fw_total, "fw_retention_days": admin_retention(c),
-            "fw_retention_set": None if v is None else int(v), "fw_retention_default": ADMIN_RETENTION_DAYS,
+    n24 = c.execute(f"SELECT (SELECT count(*) FROM events WHERE ts >= ? AND {ADM_EV}) + "
+                    "(SELECT count(*) FROM fw_admin WHERE ts >= ? AND kind = 'logon')", (day, day)).fetchone()[0]
+    v = get_setting(c, "admin_retention_days")
+    return {"logon_24h": n24, "retention_days": admin_retention(c),
+            "retention_set": None if v is None else int(v), "retention_default": ADMIN_RETENTION_DAYS,
             "win_retention_days": WIN_RETENTION_DAYS}
 
 
@@ -1856,9 +1896,9 @@ def api_admin_settings(d):
     c = store.connect()
     try:
         if v is None:
-            c.execute("DELETE FROM settings WHERE k='fw_admin_retention_days'")
+            c.execute("DELETE FROM settings WHERE k='admin_retention_days'")
         else:
-            c.execute("INSERT OR REPLACE INTO settings(k, v) VALUES('fw_admin_retention_days', ?)", (str(v),))
+            c.execute("INSERT OR REPLACE INTO settings(k, v) VALUES('admin_retention_days', ?)", (str(v),))
         c.commit()
     finally:
         c.close()
@@ -1878,7 +1918,8 @@ BK_FORMAT = 1
 PBKDF2_ITER = "200000"
 GB = 1024 ** 3
 SECTIONS = {
-    "admin": ("servers", "events", "fw_admin"),
+    "admin": ("servers", "events", "fw_admin"),     # events: solo gli accessi admin (ADM_EV)
+    "server": ("servers", "events"),                # tutti gli eventi dei server
     "firewall": ("firewalls", "logs"),
     "config": ("backup_repos", "backup_jobs", "settings"),
 }
@@ -2409,8 +2450,8 @@ def clean_job(d, conn, old=None):
     if not conn.execute("SELECT 1 FROM backup_repos WHERE id=?", (repo_id,)).fetchone():
         raise ValueError("destinazione inesistente")
     contents = d.get("contents")
-    if not isinstance(contents, list) or not contents or any(x not in ("admin", "firewall") for x in contents):
-        raise ValueError("scegli cosa salvare: accessi amministratori e/o log dei firewall")
+    if not isinstance(contents, list) or not contents or any(x not in ("admin", "server", "firewall") for x in contents):
+        raise ValueError("scegli cosa salvare: accessi amministratori, log dei server e/o log dei firewall")
     keep = _int(d.get("keep", 7), "copie da conservare")
     if not 0 <= keep <= 10000:
         raise ValueError("copie da conservare: da 0 (tutte) a 10000")
@@ -2508,7 +2549,10 @@ def make_snapshot(dst, contents, label):
     nuovo database `dst`, che e' a sua volta un database fwlog valido."""
     tables = list(SECTIONS["config"])
     for c in contents:
-        tables += SECTIONS[c]
+        tables += [t for t in SECTIONS[c] if t not in tables]
+    # con i soli accessi admin, degli eventi dei server si salvano solo quelli del registro
+    where = {"events": ADM_EV} if "admin" in contents and "server" not in contents else {}
+    where["fw_admin"] = "kind = 'logon'"
     for sfx in ("", "-journal"):
         if os.path.exists(dst + sfx):
             os.remove(dst + sfx)
@@ -2536,10 +2580,12 @@ def make_snapshot(dst, contents, label):
             if not row:
                 continue
             c.execute(row[0])
-            counts[t] = c.execute(f"INSERT INTO main.{t} SELECT * FROM src.{t}").rowcount
+            w = f" WHERE {where[t]}" if t in where else ""
+            counts[t] = c.execute(f"INSERT INTO main.{t} SELECT * FROM src.{t}{w}").rowcount
         for t in ("events", "fw_admin", "logs"):
             if t in counts and counts[t]:
-                ranges[t] = list(c.execute(f"SELECT min(ts), max(ts) FROM src.{t}").fetchone())
+                w = f" WHERE {where[t]}" if t in where else ""
+                ranges[t] = list(c.execute(f"SELECT min(ts), max(ts) FROM src.{t}{w}").fetchone())
         seq = c.execute("SELECT seq FROM src.sqlite_sequence WHERE name='servers'").fetchone() \
             if "servers" in counts else None
         if seq:
@@ -2773,7 +2819,7 @@ class Backups:
             os.makedirs(BK_TMP, exist_ok=True)
             db_size = sum(os.path.getsize(DB_PATH + s) for s in ("", "-wal") if os.path.exists(DB_PATH + s))
             # stima: copia delle tabelle (senza indici) + file compresso
-            est = db_size if "firewall" in contents else min(db_size, 64 * 1024 ** 2 + db_size // 4)
+            est = db_size if "firewall" in contents else min(db_size, 256 * 1024 ** 2 + db_size // 4)
             need_space(int(est * 1.3), "il backup")
             self.phase("copia dei dati")
             store.snapshot += 1
@@ -3708,7 +3754,8 @@ def cli_restore(argv):
         meta = unpack(a.file, tmp, password, guard=False)
     except BackupError as e:
         return fail(str(e))
-    labels = {"admin": "accessi amministratori", "firewall": "log dei firewall", "config": "configurazione backup"}
+    labels = {"admin": "accessi amministratori", "server": "log dei server", "firewall": "log dei firewall",
+              "config": "configurazione backup"}
     counts = meta.get("counts", {})
     print(f"\nBackup del {_ms_iso(meta['created'])} da {meta.get('host')} (job: {meta.get('job')})")
     print("Contenuto: " + ", ".join(labels.get(x, x) for x in meta.get("contents", [])))

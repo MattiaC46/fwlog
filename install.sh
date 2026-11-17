@@ -133,10 +133,10 @@ FWLOG_TLS_CERT=$ETC/tls.crt
 FWLOG_TLS_KEY=$ETC/tls.key
 # giorni di conservazione dei log, 0 = senza limite (vale comunque FWLOG_MIN_FREE_GB)
 FWLOG_RETENTION_DAYS=90
-# giorni di conservazione degli accessi admin dei server Windows (Garante privacy: almeno 180)
+# giorni di conservazione degli eventi dei server Windows diversi dagli accessi admin
 FWLOG_WIN_RETENTION_DAYS=365
-# giorni di conservazione predefiniti dei login admin ai firewall (registro accessi admin),
-# modificabili dalla dashboard
+# giorni di conservazione del registro accessi admin (server e firewall; Garante privacy:
+# almeno 180), modificabili dalla dashboard
 FWLOG_ADMIN_RETENTION_DAYS=365
 # sotto questo spazio libero (GB) vengono eliminati i log piu' vecchi
 FWLOG_MIN_FREE_GB=2
