@@ -178,6 +178,14 @@ dialog .err { margin: 10px 0 0; }
 .del-count.zero { color: var(--muted); font-weight: 400; }
 .deleting { color: var(--warn); }
 
+/* consultazione di un backup */
+body.browsing .rw { display: none !important; }
+.browse-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 20px; font-size: 13px;
+  background: var(--warn-bg); border-bottom: 1px solid var(--border); }
+.browse-bar b { font-weight: 650; }
+.browse-bar .grow { flex: 1; }
+body.browsing aside { box-shadow: inset 3px 0 0 var(--warn); }
+
 /* registro e backup */
 .warn-box.ok { background: var(--allow-bg); border-left-color: var(--allow); }
 .bk-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 20px 24px; display: grid; gap: 16px; align-content: start; }
@@ -257,14 +265,14 @@ progress { width: 100%; height: 8px; }
         <li><button type="button" id="nav-admin" aria-current="false"><span class="dot" id="nav-admin-dot"></span>
           <span class="fw-name">Accessi amministratori</span><span class="fw-rate" id="nav-admin-r"></span>
           <span class="fw-sub"><span id="nav-admin-s">server e firewall</span></span></button></li>
-        <li><button type="button" id="nav-backup" aria-current="false"><span class="dot" id="nav-backup-dot"></span>
+        <li class="rw"><button type="button" id="nav-backup" aria-current="false"><span class="dot" id="nav-backup-dot"></span>
           <span class="fw-name">Backup</span><span class="fw-rate" id="nav-backup-r"></span>
           <span class="fw-sub"><span id="nav-backup-s"></span></span></button></li>
       </ul>
       <div class="sec-head"><span>Firewall</span></div>
       <ul id="fwlist" class="side-list" aria-label="Firewall"></ul>
       <div class="side-empty" id="fw-empty" hidden>Nessun firewall ancora. Configura i firewall per inviare syslog a questo server sulla porta 514 (UDP o TCP).</div>
-      <div class="sec-head"><span>Server Windows</span><button class="btn small" id="b-addsrv" type="button">Aggiungi</button></div>
+      <div class="sec-head"><span>Server Windows</span><button class="btn small rw" id="b-addsrv" type="button">Aggiungi</button></div>
       <ul id="srvlist" class="side-list" aria-label="Server Windows"></ul>
       <div class="side-empty" id="srv-empty" hidden>Nessun server. Aggiungine uno per registrare gli accessi degli amministratori.</div>
     </div>
@@ -272,6 +280,13 @@ progress { width: 100%; height: 8px; }
   </aside>
 
   <main>
+    <div class="browse-bar" id="browse-bar" hidden>
+      <span id="browse-text"></span>
+      <span class="grow"></span>
+      <button class="btn small" id="browse-enter" type="button">Consulta</button>
+      <button class="btn small" id="browse-exit" type="button">Torna ai dati attuali</button>
+      <button class="btn small" id="browse-close" type="button">Chiudi il backup</button>
+    </div>
     <div class="empty" id="empty">
       <h2>Scegli un firewall o un server</h2>
       <div id="empty-text">Seleziona un firewall o un server Windows nella barra laterale.</div>
@@ -284,13 +299,13 @@ progress { width: 100%; height: 8px; }
           <div class="info"><span class="mono" id="fw-ip"></span> · <span id="fw-info"></span></div>
         </div>
         <div class="actions">
-          <button class="btn" id="b-live" type="button" aria-pressed="false"><span class="live-dot"></span>Live</button>
+          <button class="btn rw" id="b-live" type="button" aria-pressed="false"><span class="live-dot"></span>Live</button>
           <button class="btn" id="b-csv" type="button" title="Esporta i log filtrati (massimo 100.000 righe)">Esporta CSV</button>
           <button class="btn" id="b-admin" type="button" title="Accessi degli amministratori a questo firewall">Accessi admin</button>
-          <button class="btn" id="b-dellogs" type="button">Elimina log</button>
-          <button class="btn" id="b-retention" type="button">Conservazione</button>
-          <button class="btn" id="b-rename" type="button">Rinomina</button>
-          <button class="btn danger" id="b-delete" type="button">Elimina firewall</button>
+          <button class="btn rw" id="b-dellogs" type="button">Elimina log</button>
+          <button class="btn rw" id="b-retention" type="button">Conservazione</button>
+          <button class="btn rw" id="b-rename" type="button">Rinomina</button>
+          <button class="btn danger rw" id="b-delete" type="button">Elimina firewall</button>
         </div>
       </header>
 
@@ -342,12 +357,12 @@ progress { width: 100%; height: 8px; }
           <div class="info" id="sv-info"></div>
         </div>
         <div class="actions">
-          <button class="btn" id="sv-live" type="button" aria-pressed="false"><span class="live-dot"></span>Live</button>
+          <button class="btn rw" id="sv-live" type="button" aria-pressed="false"><span class="live-dot"></span>Live</button>
           <button class="btn" id="sv-csv" type="button" title="Esporta gli eventi filtrati (massimo 100.000 righe)">Esporta CSV</button>
-          <button class="btn" id="sv-retention" type="button">Conservazione</button>
-          <button class="btn" id="sv-rename" type="button">Rinomina</button>
-          <button class="btn" id="sv-token" type="button" title="Genera un nuovo token per l'agente (il vecchio smette di funzionare)">Nuovo token</button>
-          <button class="btn danger" id="sv-delete" type="button">Elimina server</button>
+          <button class="btn rw" id="sv-retention" type="button">Conservazione</button>
+          <button class="btn rw" id="sv-rename" type="button">Rinomina</button>
+          <button class="btn rw" id="sv-token" type="button" title="Genera un nuovo token per l'agente (il vecchio smette di funzionare)">Nuovo token</button>
+          <button class="btn danger rw" id="sv-delete" type="button">Elimina server</button>
         </div>
       </header>
       <div class="warns" id="sv-warns"></div>
@@ -396,7 +411,7 @@ progress { width: 100%; height: 8px; }
         </div>
         <div class="actions">
           <button class="btn" id="ad-csv" type="button" title="Esporta gli accessi filtrati (massimo 100.000 righe)">Esporta CSV</button>
-          <button class="btn" id="ad-retention" type="button">Conservazione</button>
+          <button class="btn rw" id="ad-retention" type="button">Conservazione</button>
         </div>
       </header>
       <div class="warns" id="ad-warns"></div>
@@ -437,6 +452,7 @@ progress { width: 100%; height: 8px; }
           <div class="info" id="bk-info"></div>
         </div>
         <div class="actions">
+          <button class="btn" id="bk-browse" type="button" title="Leggi i log di un backup senza ripristinarlo">Consulta un backup…</button>
           <button class="btn primary" id="bk-restore" type="button">Ripristina…</button>
           <button class="btn" id="bk-export" type="button" title="Scarica destinazioni e job in un file JSON">Esporta configurazione</button>
           <button class="btn" id="bk-import" type="button" title="Carica un file di configurazione esportato">Importa configurazione</button>
@@ -683,7 +699,7 @@ progress { width: 100%; height: 8px; }
 
 <dialog id="dlg-restore" class="wide">
   <form method="dialog" autocomplete="off">
-    <h3>Ripristina da un backup</h3>
+    <h3 id="rs-title">Ripristina da un backup</h3>
     <div id="rs-src">
       <div class="opts">
         <label class="opt"><input type="radio" name="from" value="repo" checked>
@@ -726,6 +742,7 @@ progress { width: 100%; height: 8px; }
       <span class="grow"></span>
       <button class="btn" value="cancel" formnovalidate id="rs-cancel">Chiudi</button>
       <button class="btn primary" type="button" id="rs-next">Avanti</button>
+      <button class="btn" type="button" id="rs-browse" hidden>Consulta senza ripristinare</button>
       <button class="btn danger-solid" type="button" id="rs-run" hidden>Ripristina</button>
     </div>
   </form>
@@ -762,6 +779,8 @@ const st = {
   live: false, polling: false, seq: 0, hidden: new Set(),
   srvs: [], srvLoaded: false, pin: null, srvRetention: 365,
   page: null, admin: null, backup: null,
+  browse: false, browseInfo: null,   // consultazione di un backup
+  gen: 0,                            // cambia a ogni cambio di sorgente dei dati
 };
 // server Windows selezionato e i suoi eventi
 const sv = { sel: null, rows: [], more: false, filters: {}, seq: 0, live: false, polling: false, hidden: new Set() };
@@ -784,7 +803,15 @@ function el(tag, cls, text) {
   return e;
 }
 
+// in consultazione le letture vanno al backup aperto (db=backup; "src" e' un filtro dei log)
+const RO_API = /^\/api\/(firewalls|servers|logs|facets|events|admin)(\.csv|\/facets)?(\?|$)/;
+function withSrc(path) {
+  if (!st.browse || !RO_API.test(path)) return path;
+  return path + (path.includes("?") ? "&" : "?") + "db=backup";
+}
+
 async function api(path, opt) {
+  if (!opt || !opt.method || opt.method === "GET") path = withSrc(path);
   const r = await fetch(path, Object.assign({ cache: "no-store", credentials: "same-origin" }, opt));
   let d = null;
   try { d = await r.json(); } catch (_) { /* risposta non JSON */ }
@@ -821,21 +848,27 @@ function fmtBytes(b) {
 /* ---------------- barra laterale ---------------- */
 
 async function loadFirewalls() {
+  const gen = st.gen;
   try {
     const [d, s] = await Promise.all([api("/api/firewalls"), api("/api/servers")]);
+    if (gen !== st.gen) return;   // risposta della sorgente precedente (attuale/backup)
     for (const id of [...st.hidden]) if (!d.firewalls.some((f) => f.id === id)) st.hidden.delete(id);
     st.fws = d.firewalls.filter((f) => !st.hidden.has(f.id));
     st.now = d.now; st.stats = d.stats; st.loaded = true;
-    st.admin = d.admin; st.backup = d.backup;
+    st.admin = d.admin; st.backup = d.backup; st.browseInfo = d.browse;
+    if (st.browse && !d.browse) { exitBrowse("Il backup in consultazione è stato chiuso."); return; }
     for (const id of [...sv.hidden]) if (!s.servers.some((x) => x.id === id)) sv.hidden.delete(id);
     st.srvs = s.servers.filter((x) => !sv.hidden.has(x.id));
     st.pin = s.pin; st.srvRetention = s.retention_days; st.srvLoaded = true;
     $("#side-msg").hidden = true;
   } catch (e) {
+    if (gen !== st.gen) return;
+    if (st.browse) { exitBrowse("Consultazione terminata: " + e.message); return; }
     $("#side-msg").textContent = "Server non raggiungibile: " + e.message;
     $("#side-msg").hidden = false;
   }
   renderSidebar();
+  renderBrowseBar();
   renderMain();
 }
 
@@ -926,6 +959,12 @@ function renderSidebar() {
   $("#srv-empty").hidden = !(st.srvLoaded && !st.srvs.length);
   const foot = $("#side-foot");
   foot.replaceChildren();
+  if (st.browse && st.browseInfo) {
+    const b = st.browseInfo, d = el("div", null, "Backup del ");
+    d.append(el("b", null, fmtFull(b.created).slice(0, -4)), " da " + b.host);
+    foot.append(d, el("div", null, "Contenuto: " + b.contents.map((c) => CONTENT[c]).join(", ")),
+      el("div", null, "Sola lettura: i dati attuali non vengono toccati."));
+  }
   const s = st.stats;
   if (s) {
     const line = (label, value, bad) => {
@@ -1006,7 +1045,7 @@ function onHash() {
   const h = location.hash;
   const m = /^#fw-(\d+)$/.exec(h), ms = /^#srv-(\d+)$/.exec(h), ma = /^#admin(?::(.+))?$/.exec(h);
   const id = m ? Number(m[1]) : null, sid = ms ? Number(ms[1]) : null;
-  const page = ma ? "admin" : h === "#backup" ? "backup" : null;
+  const page = ma ? "admin" : h === "#backup" && !st.browse ? "backup" : null;
   let dev = null;
   try { dev = ma && ma[1] ? decodeURIComponent(ma[1]) : null; } catch (_) { /* hash non valido */ }
   if (id === st.sel && sid === sv.sel && page === st.page && (page !== "admin" || dev === ad.dev)) return;
@@ -1277,7 +1316,7 @@ $("#b-live").addEventListener("click", () => {
 
 $("#b-csv").addEventListener("click", () => {
   if (st.sel == null) return;
-  location.href = "/api/logs.csv?" + query();
+  location.href = withSrc("/api/logs.csv?" + query());
 });
 
 // le finestre Rinomina, Conservazione ed Elimina valgono per firewall e server:
@@ -1600,6 +1639,7 @@ function renderServer(s) {
 function renderSrvWarns(s) {
   const box = $("#sv-warns"), stt = s.status || {};
   box.replaceChildren();
+  if (st.browse) return;
   const add = (text, bad) => box.append(el("p", "warn-box" + (bad ? " bad" : ""), text));
   if (s.last_seen == null) {
     add("L'agente non ha ancora contattato fwlog. Installalo sul server con il comando mostrato alla creazione; se non lo hai più, genera un nuovo token.");
@@ -1808,7 +1848,7 @@ $("#sv-live").addEventListener("click", () => {
   $("#sv-live").setAttribute("aria-pressed", String(sv.live));
   if (sv.live) spoll();
 });
-$("#sv-csv").addEventListener("click", () => { if (sv.sel != null) location.href = "/api/events.csv?" + squery(); });
+$("#sv-csv").addEventListener("click", () => { if (sv.sel != null) location.href = withSrc("/api/events.csv?" + squery()); });
 $("#sv-rename").addEventListener("click", () => openRename(srvCtx()));
 $("#sv-retention").addEventListener("click", () => openRetention(srvCtx()));
 $("#sv-delete").addEventListener("click", () => {
@@ -1961,7 +2001,7 @@ function renderAdminHead() {
   if (a) {
     if (a.retention_days > 0 && a.retention_days < 180) add("Il Garante privacy chiede di conservare gli accessi degli amministratori per almeno 6 mesi: la conservazione del registro è di " + daysText(a.retention_days) + ".", true);
   }
-  if (b && !b.admin_covered) add("Nessun job di backup attivo salva questo registro fuori dalla VM. Configuralo nella pagina Backup.");
+  if (b && !b.admin_covered && !st.browse) add("Nessun job di backup attivo salva questo registro fuori dalla VM. Configuralo nella pagina Backup.");
   document.title = "Accessi amministratori · fwlog";
 }
 
@@ -2083,7 +2123,7 @@ $("#ab-reset").addEventListener("click", () => {
   if (ad.dev) { location.hash = "admin"; return; }
   loadAdRows();
 });
-$("#ad-csv").addEventListener("click", () => { location.href = "/api/admin.csv?" + aquery(); });
+$("#ad-csv").addEventListener("click", () => { location.href = withSrc("/api/admin.csv?" + aquery()); });
 $("#ad-retention").addEventListener("click", () => {
   const a = st.admin;
   if (!a) return;
@@ -2478,7 +2518,7 @@ $("#bk-import-file").addEventListener("change", async (e) => {
 
 /* ---- ripristino ---- */
 const dlgRs = $("#dlg-restore"), rsForm = dlgRs.querySelector("form");
-const rs = { step: "src", files: [], seq: 0, done: false };
+const rs = { step: "src", files: [], seq: 0, done: false, purpose: "restore" };
 
 function rsShow(id, on) { $(id).hidden = !on; }
 function rsErr(m) { $("#rs-err").textContent = m || ""; rsShow("#rs-err", !!m); }
@@ -2487,14 +2527,17 @@ function rsStep(step) {
   rsShow("#rs-src", step === "src");
   rsShow("#rs-pick", step === "pick");
   rsShow("#rs-next", step === "src");
-  rsShow("#rs-run", step === "pick");
+  const browseOnly = rs.purpose === "browse";
+  rsShow("#rs-run", step === "pick" && !browseOnly);
+  rsShow("#rs-browse", step === "pick");
+  for (const e of dlgRs.querySelectorAll("#rs-pick fieldset, #rs-warn")) e.hidden = browseOnly;
   rsShow("#rs-back", step === "pick");
   $("#rs-cancel").textContent = step === "done" ? "Chiudi" : "Annulla";
 }
 function rsBusy(text) {
   rsShow("#rs-busy", !!text);
   $("#rs-phase").textContent = text || "";
-  for (const b of ["#rs-next", "#rs-run", "#rs-back"]) $(b).disabled = !!text;
+  for (const b of ["#rs-next", "#rs-run", "#rs-back", "#rs-browse"]) $(b).disabled = !!text;
 }
 
 function rsFrom() {
@@ -2605,9 +2648,11 @@ function rsWarn() {
 }
 rsForm.addEventListener("change", (e) => { if (rs.step === "pick" && e.target.name !== "from") rsWarn(); });
 
-async function openRestore(repoId) {
+async function openRestore(repoId, purpose) {
   rsForm.reset();
   rs.done = false;
+  rs.purpose = purpose || "restore";
+  $("#rs-title").textContent = rs.purpose === "browse" ? "Consulta un backup" : "Ripristina da un backup";
   rsErr(null);
   rsShow("#rs-done", false);
   rsShow("#rs-prog", false);
@@ -2629,6 +2674,7 @@ async function openRestore(repoId) {
   if (d.task) { rsBusy("…"); rsWait().then(() => rsBusy(null)); }
 }
 $("#bk-restore").addEventListener("click", () => openRestore(null));
+$("#bk-browse").addEventListener("click", () => openRestore(null, "browse"));
 $("#rs-back").addEventListener("click", () => { rsErr(null); rsStep("src"); if (rsForm.elements.from.value === "repo") loadRsList(); });
 
 $("#rs-next").addEventListener("click", async () => {
@@ -2655,9 +2701,82 @@ $("#rs-next").addEventListener("click", async () => {
       if (/password/.test(msg)) f.password.focus();
       return;
     }
+    if (rs.purpose === "browse") { await rsBrowse(); return; }
     rsStep("pick");
     rsMeta(d.stage.meta, d.stage.origin);
   } catch (e) { rsBusy(null); rsErr(e.message); }
+});
+
+// consultazione: il backup preparato viene indicizzato e la dashboard legge da lì
+async function rsBrowse() {
+  rsErr(null);
+  try {
+    rsBusy("Avvio…");
+    await postJson("/api/restore/browse", {});
+    const d = await rsWait();
+    rsBusy(null);
+    if (!d.stage || !d.stage.browse) { rsErr((d.last && d.last.msg) || "apertura non riuscita"); return; }
+    rs.done = true;
+    dlgRs.close();
+    enterBrowse();
+  } catch (e) { rsBusy(null); rsErr(e.message); }
+}
+$("#rs-browse").addEventListener("click", rsBrowse);
+
+function goFresh(hash) {
+  // la sorgente dei dati e' cambiata: tutte le viste vanno ricaricate
+  st.gen++;
+  st.sel = null; sv.sel = null; st.page = null; ad.dev = undefined;
+  st.live = false; sv.live = false;
+  $("#b-live").setAttribute("aria-pressed", "false");
+  $("#sv-live").setAttribute("aria-pressed", "false");
+  st.fws = []; st.srvs = []; st.loaded = st.srvLoaded = false;
+  st.hidden.clear(); sv.hidden.clear();
+  if (location.hash.replace(/^#/, "") === hash) onHash(); else location.hash = hash;
+}
+
+function enterBrowse() {
+  st.browse = true;
+  document.body.classList.add("browsing");
+  const info = bk.data && bk.data.stage && bk.data.stage.meta;
+  const onlyAdmin = info && !info.contents.includes("firewall") && !info.contents.includes("server");
+  goFresh(onlyAdmin ? "admin" : "");
+  loadFirewalls();
+}
+
+function exitBrowse(msg) {
+  st.browse = false;
+  document.body.classList.remove("browsing");
+  goFresh("");
+  loadFirewalls();
+  if (msg) { $("#side-msg").textContent = msg; $("#side-msg").hidden = false; setTimeout(() => { $("#side-msg").hidden = true; }, 8000); }
+}
+
+function renderBrowseBar() {
+  const b = st.browseInfo, bar = $("#browse-bar");
+  bar.hidden = !b;
+  if (!b) return;
+  const t = $("#browse-text");
+  t.replaceChildren();
+  const what = b.contents.filter((c) => c !== "config").map((c) => CONTENT[c]).join(", ");
+  if (st.browse) {
+    t.append("Stai consultando il backup del ", el("b", null, fmtFull(b.created).slice(0, -4)), " da " + b.host +
+      " (" + what + "). Sola lettura.");
+  } else {
+    t.append("Backup del ", el("b", null, fmtFull(b.created).slice(0, -4)), " aperto per la consultazione.");
+  }
+  $("#browse-enter").hidden = st.browse;
+  $("#browse-exit").hidden = !st.browse;
+}
+$("#browse-enter").addEventListener("click", async () => {
+  bk.data = await api("/api/backup").catch(() => bk.data);
+  enterBrowse();
+});
+$("#browse-exit").addEventListener("click", () => exitBrowse());
+$("#browse-close").addEventListener("click", async () => {
+  try { await api("/api/restore", { method: "DELETE" }); } catch (e) { $("#side-msg").textContent = e.message; $("#side-msg").hidden = false; return; }
+  st.browseInfo = null;
+  if (st.browse) exitBrowse(); else renderBrowseBar();
 });
 
 $("#rs-run").addEventListener("click", async () => {
@@ -2684,7 +2803,7 @@ $("#rs-run").addEventListener("click", async () => {
 dlgRs.addEventListener("close", () => {
   rs.seq++;
   // un backup preparato e non ripristinato occupa spazio sul disco dati: lo elimina
-  if (!rs.done && bk.data && bk.data.stage && !bk.data.task) api("/api/restore", { method: "DELETE" }).catch(() => {});
+  if (!rs.done && bk.data && bk.data.stage && !bk.data.stage.browse && !bk.data.task) api("/api/restore", { method: "DELETE" }).catch(() => {});
   if (st.page === "backup") loadBackup();
 });
 

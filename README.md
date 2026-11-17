@@ -719,6 +719,20 @@ inserisci la password se è cifrato, poi cosa ripristinare:
 I dati più vecchi della conservazione impostata vengono eliminati entro un minuto: per
 consultare log vecchi, aumenta prima la conservazione.
 
+### Consultare un backup senza ripristinarlo
+
+**Consulta un backup…** (oppure *Consulta senza ripristinare* nella finestra di
+ripristino): scegli il backup da una destinazione o carica un file, inserisci la password
+se è cifrato. fwlog lo decomprime in `/srv/fwlog/restore`, crea gli indici per le ricerche
+e la dashboard passa in **consultazione**: una barra in alto indica quale backup stai
+guardando; firewall, server, registro accessi, filtri ed **Esporta CSV** funzionano come
+sempre ma sui dati del backup. I dati attuali non vengono toccati, la ricezione continua
+e i pulsanti che modificano qualcosa sono nascosti.
+
+**Torna ai dati attuali** lascia il backup aperto (si può riprendere con **Consulta**
+dalla barra); **Chiudi il backup** elimina la copia decompressa e libera lo spazio. Il
+backup aperto viene chiuso anche preparando un altro ripristino o riavviando fwlog.
+
 ### Ricostruire la macchina da zero
 
 1. Prepara la VM e il disco dati come alle sezioni 1 e 2, scarica il repository.
