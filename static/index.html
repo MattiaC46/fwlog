@@ -178,13 +178,62 @@ dialog .err { margin: 10px 0 0; }
 .del-count.zero { color: var(--muted); font-weight: 400; }
 .deleting { color: var(--warn); }
 
+/* registro e backup */
+.warn-box.ok { background: var(--allow-bg); border-left-color: var(--allow); }
+.bk-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 20px 24px; display: grid; gap: 16px; align-content: start; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; min-width: 0; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px 8px; }
+.card-head h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.card-head p { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); }
+.card .scroll { overflow-x: auto; }
+.card .side-empty { padding: 4px 14px 14px; }
+table.plain { min-width: 720px; }
+table.plain thead th { position: static; background: none; }
+table.plain td { white-space: normal; vertical-align: middle; }
+table.plain td.nw { white-space: nowrap; }
+table.plain td.acts { text-align: right; white-space: nowrap; }
+table.plain td.acts .btn { margin-left: 4px; }
+.chip { display: inline-block; font-size: 11.5px; padding: 0 7px; border-radius: 9px; line-height: 18px; background: var(--neutral-bg); margin: 1px 4px 1px 0; white-space: nowrap; }
+.chip.admin { background: var(--warn-bg); color: var(--warn); font-weight: 600; }
+.small { font-size: 12px; }
+.task { display: flex; align-items: center; gap: 10px; }
+.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: rot .9s linear infinite; flex: none; }
+@keyframes rot { to { transform: rotate(360deg); } }
+dialog .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 12px; margin-bottom: 10px; }
+dialog label.f { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--muted); }
+dialog label.f input[type=text], dialog label.f input[type=password], dialog label.f input[type=number],
+dialog label.f input[type=time], dialog label.f select { width: 100%; border: 1px solid var(--border); background: var(--bg);
+  border-radius: 6px; padding: 6px 9px; color: var(--text); font: inherit; }
+dialog label.f.wide { grid-column: 1 / -1; }
+dialog input[type=password] { font-family: var(--mono); }
+dialog label.c { display: flex; align-items: flex-start; gap: 8px; font-size: 13.5px; }
+dialog label.c small { display: block; color: var(--muted); font-size: 12px; }
+dialog fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 12px; margin: 0 0 12px; display: grid; gap: 8px; }
+dialog legend { font-size: 12.5px; color: var(--muted); padding: 0 4px; }
+dialog .days { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+dialog .row .grow { flex: 1; }
+dialog .row { align-items: center; }
+.test-res { margin: 8px 0 0; padding: 7px 12px; border-radius: 6px; font-size: 13px; background: var(--allow-bg); color: var(--allow); }
+.test-res.bad { background: var(--deny-bg); color: var(--deny); }
+.bk-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.bk-list li { border-bottom: 1px solid var(--border); }
+.bk-list li:last-child { border-bottom: 0; }
+.bk-list label { display: grid; grid-template-columns: 18px 1fr auto; gap: 2px 8px; padding: 7px 10px; cursor: pointer; align-items: center; }
+.bk-list label:hover { background: var(--hover); }
+.bk-list .sub { grid-column: 2 / 4; font-size: 12px; color: var(--muted); }
+.bk-list .none { padding: 14px; }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 13px; margin: 0 0 12px; }
+.meta dt { color: var(--muted); }
+.meta dd { margin: 0; }
+progress { width: 100%; height: 8px; }
+
 @media (max-width: 820px) {
   .app { display: block; height: auto; }
   aside { border-right: 0; border-bottom: 1px solid var(--border); }
   .lists { max-height: 45vh; }
   main { min-height: 60vh; }
   .tablewrap { overflow-x: auto; overflow-y: visible; }
-  header.fw, form.filters, .foot { padding-left: 12px; padding-right: 12px; }
+  header.fw, form.filters, .foot, .bk-body { padding-left: 12px; padding-right: 12px; }
   .actions { margin-left: 0; }
   form.filters label.wide { grid-column: auto; }
 }
@@ -203,6 +252,15 @@ dialog .err { margin: 10px 0 0; }
     </div>
     <div class="side-msg" id="side-msg" hidden></div>
     <div class="lists">
+      <div class="sec-head"><span>Registro e backup</span></div>
+      <ul class="side-list" aria-label="Registro e backup">
+        <li><button type="button" id="nav-admin" aria-current="false"><span class="dot" id="nav-admin-dot"></span>
+          <span class="fw-name">Accessi amministratori</span><span class="fw-rate" id="nav-admin-r"></span>
+          <span class="fw-sub"><span id="nav-admin-s">server e firewall</span></span></button></li>
+        <li><button type="button" id="nav-backup" aria-current="false"><span class="dot" id="nav-backup-dot"></span>
+          <span class="fw-name">Backup</span><span class="fw-rate" id="nav-backup-r"></span>
+          <span class="fw-sub"><span id="nav-backup-s"></span></span></button></li>
+      </ul>
       <div class="sec-head"><span>Firewall</span></div>
       <ul id="fwlist" class="side-list" aria-label="Firewall"></ul>
       <div class="side-empty" id="fw-empty" hidden>Nessun firewall ancora. Configura i firewall per inviare syslog a questo server sulla porta 514 (UDP o TCP).</div>
@@ -228,6 +286,7 @@ dialog .err { margin: 10px 0 0; }
         <div class="actions">
           <button class="btn" id="b-live" type="button" aria-pressed="false"><span class="live-dot"></span>Live</button>
           <button class="btn" id="b-csv" type="button" title="Esporta i log filtrati (massimo 100.000 righe)">Esporta CSV</button>
+          <button class="btn" id="b-admin" type="button" title="Accessi degli amministratori a questo firewall">Accessi admin</button>
           <button class="btn" id="b-dellogs" type="button">Elimina log</button>
           <button class="btn" id="b-retention" type="button">Conservazione</button>
           <button class="btn" id="b-rename" type="button">Rinomina</button>
@@ -326,6 +385,95 @@ dialog .err { margin: 10px 0 0; }
           <span id="scount"></span>
           <button class="btn" id="s-more" type="button" hidden>Carica altri</button>
         </div>
+      </div>
+    </div>
+
+    <div id="aview" hidden>
+      <header class="fw">
+        <div>
+          <h1>Accessi amministratori</h1>
+          <div class="info" id="ad-info"></div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="ad-csv" type="button" title="Esporta gli accessi filtrati (massimo 100.000 righe)">Esporta CSV</button>
+          <button class="btn" id="ad-retention" type="button">Conservazione firewall</button>
+        </div>
+      </header>
+      <div class="warns" id="ad-warns"></div>
+      <form class="filters" id="afilters" autocomplete="off">
+        <label>Dispositivo <select name="dev" id="af-dev"><option value="">Tutti</option></select></label>
+        <label>Utente <input name="user" list="dl-auser" placeholder="es. admin"></label>
+        <label>IP di origine <input name="ip" placeholder="IP o CIDR"></label>
+        <label>Evento <select name="kind" id="af-kind"><option value="">Tutti</option></select></label>
+        <label>Esito <select name="outcome"><option value="">Tutti</option><option value="ok">Riuscito</option><option value="fail">Fallito</option></select></label>
+        <label class="wide">Testo <input name="q" placeholder="cerca in tutti i campi"></label>
+        <label>Da <input name="from" type="datetime-local" step="1"></label>
+        <label>A <input name="to" type="datetime-local" step="1"></label>
+        <div class="f-actions">
+          <button class="btn primary" type="submit">Applica filtri</button>
+          <button class="btn" type="button" id="ab-reset">Azzera</button>
+          <span class="hint">Accessi ai server Windows e login degli amministratori ai firewall (GUI, SSH, console). CIDR ammesso, ! per escludere.</span>
+        </div>
+        <datalist id="dl-auser"></datalist>
+      </form>
+      <div id="ad-err" class="err" role="alert" hidden></div>
+      <div class="tablewrap" id="awrap">
+        <table class="ev">
+          <thead><tr>
+            <th>Ora</th><th>Dispositivo</th><th>Evento</th><th>Utente</th><th>Origine</th><th>Accesso</th><th>Dettagli</th>
+          </tr></thead>
+          <tbody id="arows"></tbody>
+        </table>
+        <div class="none" id="anone" hidden>Nessun accesso corrisponde ai filtri.</div>
+        <div class="foot">
+          <span id="acount"></span>
+          <button class="btn" id="a-more" type="button" hidden>Carica altri</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="bview" hidden>
+      <header class="fw">
+        <div>
+          <h1>Backup e ripristino</h1>
+          <div class="info" id="bk-info"></div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="bk-restore" type="button">Ripristina…</button>
+          <button class="btn" id="bk-export" type="button" title="Scarica destinazioni e job in un file JSON">Esporta configurazione</button>
+          <button class="btn" id="bk-import" type="button" title="Carica un file di configurazione esportato">Importa configurazione</button>
+          <input type="file" id="bk-import-file" accept=".json,application/json" hidden>
+        </div>
+      </header>
+      <div class="warns" id="bk-warns"></div>
+      <div class="bk-body">
+        <section class="card">
+          <div class="card-head">
+            <div><h2>Job di backup</h2><p>Cosa salvare, dove e quando. La configurazione è sempre inclusa.</p></div>
+            <button class="btn" id="bk-addjob" type="button">Nuovo job</button>
+          </div>
+          <div class="scroll"><table class="plain"><thead><tr>
+            <th>Nome</th><th>Contenuto</th><th>Destinazione</th><th>Quando</th><th>Copie</th><th>Ultimo</th><th>Prossimo</th><th></th>
+          </tr></thead><tbody id="bk-jobs"></tbody></table></div>
+          <div class="side-empty" id="bk-jobs-empty" hidden>Nessun job. Crea prima una destinazione, poi un job che salvi almeno gli accessi amministratori.</div>
+        </section>
+        <section class="card">
+          <div class="card-head">
+            <div><h2>Destinazioni</h2><p>Dove finiscono i backup: disco o NAS montato, S3, condivisione SMB.</p></div>
+            <button class="btn" id="bk-addrepo" type="button">Nuova destinazione</button>
+          </div>
+          <div class="scroll"><table class="plain"><thead><tr>
+            <th>Nome</th><th>Tipo</th><th>Posizione</th><th></th>
+          </tr></thead><tbody id="bk-repos"></tbody></table></div>
+          <div class="side-empty" id="bk-repos-empty" hidden>Nessuna destinazione.</div>
+        </section>
+        <section class="card">
+          <div class="card-head"><div><h2>Cronologia</h2><p>Ultimi backup e ripristini.</p></div></div>
+          <div class="scroll"><table class="plain"><thead><tr>
+            <th>Inizio</th><th>Operazione</th><th>Esito</th><th>Durata</th><th>Dimensione</th><th>Dettagli</th>
+          </tr></thead><tbody id="bk-runs"></tbody></table></div>
+          <div class="side-empty" id="bk-runs-empty" hidden>Ancora nessuna operazione.</div>
+        </section>
       </div>
     </div>
   </main>
@@ -433,6 +581,171 @@ dialog .err { margin: 10px 0 0; }
   </form>
 </dialog>
 
+<dialog id="dlg-repo" class="wide">
+  <form method="dialog" autocomplete="off">
+    <h3 id="rp-title">Nuova destinazione</h3>
+    <div class="grid2">
+      <label class="f">Nome <input type="text" name="name" maxlength="80" placeholder="es. NAS ufficio"></label>
+      <label class="f">Tipo <select name="type">
+        <option value="local">Cartella (disco o NAS montato)</option>
+        <option value="s3">S3 o compatibile</option>
+        <option value="smb">Condivisione SMB (Windows, NAS)</option>
+      </select></label>
+    </div>
+    <div data-t="local">
+      <div class="grid2"><label class="f wide">Cartella <input type="text" name="path" placeholder="/mnt/backup-fwlog" spellcheck="false"></label></div>
+      <p class="muted small">Disco USB o aggiuntivo, oppure NAS montato via NFS o SMB (fstab), sotto /mnt o /media. La cartella deve essere
+        scrivibile dall'utente fwlog. Vedi il README, sezione Backup.</p>
+    </div>
+    <div data-t="s3">
+      <div class="grid2">
+        <label class="f wide">Endpoint <input type="text" name="endpoint" placeholder="vuoto = AWS (https://s3.REGIONE.amazonaws.com)" spellcheck="false"></label>
+        <label class="f">Regione <input type="text" name="region" placeholder="eu-south-1" spellcheck="false"></label>
+        <label class="f">Bucket <input type="text" name="bucket" spellcheck="false"></label>
+        <label class="f wide">Cartella nel bucket <input type="text" name="prefix" placeholder="es. fwlog/sede-milano" spellcheck="false"></label>
+        <label class="f">Access key <input type="text" name="access_key" spellcheck="false"></label>
+        <label class="f">Secret key <input type="password" name="secret_key" autocomplete="new-password"></label>
+      </div>
+      <label class="c"><input type="checkbox" name="path_style"> <span>Indirizzi path-style<small>Per MinIO, NAS e endpoint con IP. AWS e Wasabi funzionano in entrambi i modi.</small></span></label>
+      <label class="c"><input type="checkbox" name="verify_tls" checked> <span>Verifica il certificato HTTPS<small>Disattiva solo per un endpoint interno con certificato autofirmato.</small></span></label>
+    </div>
+    <div data-t="smb">
+      <div class="grid2">
+        <label class="f">Server <input type="text" name="server" placeholder="nas.local o 192.168.1.20" spellcheck="false"></label>
+        <label class="f">Condivisione <input type="text" name="share" placeholder="backup" spellcheck="false"></label>
+        <label class="f wide">Cartella <input type="text" name="folder" placeholder="fwlog (creata se manca)" spellcheck="false"></label>
+        <label class="f">Utente <input type="text" name="user" spellcheck="false"></label>
+        <label class="f">Password <input type="password" name="password" autocomplete="new-password"></label>
+        <label class="f">Dominio <input type="text" name="domain" placeholder="facoltativo" spellcheck="false"></label>
+      </div>
+      <p class="muted small">Usa smbclient, senza montare la condivisione. Meglio un utente dedicato con accesso alla sola cartella dei backup.</p>
+    </div>
+    <p class="test-res" id="rp-test" hidden></p>
+    <p class="err" id="rp-err" hidden></p>
+    <div class="row">
+      <button class="btn" type="button" id="rp-testbtn">Prova</button>
+      <span class="grow"></span>
+      <button class="btn" value="cancel" formnovalidate>Annulla</button>
+      <button class="btn primary" value="save">Salva</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-job" class="wide">
+  <form method="dialog" autocomplete="off">
+    <h3 id="jb-title">Nuovo job di backup</h3>
+    <div class="grid2">
+      <label class="f">Nome <input type="text" name="name" maxlength="80" placeholder="es. Registro admin giornaliero"></label>
+      <label class="f">Destinazione <select name="repo_id"></select></label>
+    </div>
+    <fieldset>
+      <legend>Cosa salvare</legend>
+      <label class="c"><input type="checkbox" name="c_admin" checked> <span>Accessi amministratori<small>Server Windows e login ai firewall: il registro da conservare per legge. Pochi MB.</small></span></label>
+      <label class="c"><input type="checkbox" name="c_firewall"> <span>Log dei firewall<small>Tutto il traffico registrato: può occupare molti GB. Meglio un job separato, meno frequente.</small></span></label>
+      <span class="muted small">Sempre inclusi: destinazioni, job, impostazioni, certificato TLS e fwlog.env (per ricostruire la macchina da zero).</span>
+    </fieldset>
+    <fieldset>
+      <legend>Quando</legend>
+      <div class="grid2">
+        <label class="f">Frequenza <select name="freq">
+          <option value="daily">Ogni giorno</option>
+          <option value="weekly">Ogni settimana</option>
+          <option value="monthly">Ogni mese</option>
+          <option value="hours">Ogni N ore</option>
+          <option value="manual">Solo manuale</option>
+        </select></label>
+        <label class="f" data-s="time">Ora <input type="time" name="time" value="02:30"></label>
+        <label class="f" data-s="mday">Giorno del mese <input type="number" name="mday" min="1" max="28" value="1"></label>
+        <label class="f" data-s="every">Ogni quante ore <input type="number" name="every" min="1" max="24" value="6"></label>
+      </div>
+      <div class="days" data-s="days"></div>
+    </fieldset>
+    <div class="grid2">
+      <label class="f">Copie da conservare <input type="number" name="keep" min="0" max="10000" value="14"></label>
+    </div>
+    <p class="muted small" style="margin-top:-4px">Dopo ogni backup riuscito vengono eliminate le copie più vecchie di questo job. 0 = non eliminare mai.</p>
+    <fieldset>
+      <legend>Cifratura</legend>
+      <label class="c"><input type="checkbox" name="encrypt"> <span>Cifra il backup (AES-256)<small>Consigliata per S3 e NAS condivisi: gli accessi contengono nomi utente e indirizzi IP.</small></span></label>
+      <div class="grid2" data-s="pw">
+        <label class="f">Password <input type="password" name="password" autocomplete="new-password"></label>
+        <label class="f">Ripeti password <input type="password" name="password2" autocomplete="new-password"></label>
+      </div>
+      <p class="warn-box" data-s="pw">Senza questa password il backup non si può ripristinare. Conservala fuori da fwlog (è inclusa in «Esporta configurazione»).</p>
+    </fieldset>
+    <label class="c"><input type="checkbox" name="enabled" checked> <span>Pianificazione attiva</span></label>
+    <p class="err" id="jb-err" hidden></p>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate>Annulla</button>
+      <button class="btn primary" value="save">Salva</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-restore" class="wide">
+  <form method="dialog" autocomplete="off">
+    <h3>Ripristina da un backup</h3>
+    <div id="rs-src">
+      <div class="opts">
+        <label class="opt"><input type="radio" name="from" value="repo" checked>
+          <span>Da una destinazione<small>I backup salvati dai job. Su una macchina nuova importa prima la configurazione.</small></span></label>
+        <label class="opt"><input type="radio" name="from" value="file">
+          <span>Da un file sul computer<small>Un file .fwbk scaricato dal NAS o dal cloud.</small></span></label>
+      </div>
+      <div id="rs-repo">
+        <label class="f">Destinazione <select name="repo"></select></label>
+        <ul class="bk-list" id="rs-list"></ul>
+      </div>
+      <div id="rs-file" hidden>
+        <input type="file" name="file" accept=".fwbk">
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <label class="f">Password del backup <input type="password" name="password" autocomplete="off" placeholder="solo se cifrato"></label>
+      </div>
+    </div>
+    <div id="rs-pick" hidden>
+      <dl class="meta" id="rs-meta"></dl>
+      <fieldset>
+        <legend>Cosa ripristinare</legend>
+        <label class="c" data-sec="admin"><input type="checkbox" name="s_admin"> <span>Accessi amministratori<small id="rs-admin-n"></small></span></label>
+        <div class="opts" data-sec="admin" style="margin:0 0 0 26px">
+          <label class="opt"><input type="radio" name="mode" value="merge" checked><span>Aggiungi gli accessi mancanti<small>Non elimina nulla: utile per recuperare accessi persi o già scaduti.</small></span></label>
+          <label class="opt"><input type="radio" name="mode" value="replace"><span>Torna esattamente al backup<small>Server e accessi registrati dopo il backup vengono eliminati.</small></span></label>
+        </div>
+        <label class="c" data-sec="firewall"><input type="checkbox" name="s_firewall"> <span>Log dei firewall<small id="rs-fw-n"></small></span></label>
+        <label class="c" data-sec="config"><input type="checkbox" name="s_config"> <span>Configurazione dei backup<small>Destinazioni, job e impostazioni: aggiunti o aggiornati per nome, non elimina nulla.</small></span></label>
+      </fieldset>
+      <p class="warn-box" id="rs-warn"></p>
+    </div>
+    <div id="rs-busy" class="task" hidden><span class="spin"></span><span id="rs-phase"></span></div>
+    <progress id="rs-prog" max="1" value="0" hidden></progress>
+    <p class="test-res" id="rs-done" hidden></p>
+    <p class="err" id="rs-err" hidden></p>
+    <div class="row">
+      <button class="btn" type="button" id="rs-back" hidden>Indietro</button>
+      <span class="grow"></span>
+      <button class="btn" value="cancel" formnovalidate id="rs-cancel">Chiudi</button>
+      <button class="btn primary" type="button" id="rs-next">Avanti</button>
+      <button class="btn danger-solid" type="button" id="rs-run" hidden>Ripristina</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-export">
+  <form method="dialog">
+    <h3>Esporta configurazione</h3>
+    <p class="muted">Un file JSON con destinazioni e job: dopo una reinstallazione si importa da qui e i backup tornano a funzionare.</p>
+    <div class="opts">
+      <label class="opt"><input type="radio" name="sec" value="1" checked><span>Con password e chiavi<small>Pronto all'uso. Conservalo in un posto sicuro: dà accesso ai backup.</small></span></label>
+      <label class="opt"><input type="radio" name="sec" value="0"><span>Senza password e chiavi<small>Andranno reinserite dopo l'importazione.</small></span></label>
+    </div>
+    <div class="row">
+      <button class="btn" value="cancel">Annulla</button>
+      <button class="btn primary" value="ok">Scarica</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 "use strict";
 // I log arrivano dalla rete: ogni valore va nel DOM solo tramite textContent / attributi.
@@ -448,6 +761,7 @@ const st = {
   sel: null, rows: [], more: false, filters: {},
   live: false, polling: false, seq: 0, hidden: new Set(),
   srvs: [], srvLoaded: false, pin: null, srvRetention: 365,
+  page: null, admin: null, backup: null,
 };
 // server Windows selezionato e i suoi eventi
 const sv = { sel: null, rows: [], more: false, filters: {}, seq: 0, live: false, polling: false, hidden: new Set() };
@@ -512,6 +826,7 @@ async function loadFirewalls() {
     for (const id of [...st.hidden]) if (!d.firewalls.some((f) => f.id === id)) st.hidden.delete(id);
     st.fws = d.firewalls.filter((f) => !st.hidden.has(f.id));
     st.now = d.now; st.stats = d.stats; st.loaded = true;
+    st.admin = d.admin; st.backup = d.backup;
     for (const id of [...sv.hidden]) if (!s.servers.some((x) => x.id === id)) sv.hidden.delete(id);
     st.srvs = s.servers.filter((x) => !sv.hidden.has(x.id));
     st.pin = s.pin; st.srvRetention = s.retention_days; st.srvLoaded = true;
@@ -537,7 +852,35 @@ function srvHealth(s) {
   return { cls: " bad", title: "L'agente non contatta fwlog da " + fmtAgo(age).replace(" fa", "") };
 }
 
+function renderNav() {
+  const a = st.admin, b = st.backup;
+  $("#nav-admin").setAttribute("aria-current", String(st.page === "admin"));
+  $("#nav-backup").setAttribute("aria-current", String(st.page === "backup"));
+  if (a) {
+    const short = [a.fw_retention_days, a.win_retention_days].some((d) => d > 0 && d < 180);
+    $("#nav-admin-dot").className = "dot" + (short ? " warn" : " ok");
+    $("#nav-admin-dot").title = short ? "Conservazione inferiore a 6 mesi" : "Conservazione di almeno 6 mesi";
+    const r = $("#nav-admin-r");
+    r.textContent = a.fail_24h ? nf.format(a.fail_24h) + " falliti" : "";
+    r.className = "fw-rate" + (a.fail_24h ? " bad" : "");
+    r.title = a.fail_24h ? "Accessi falliti nelle ultime 24 ore" : "";
+  }
+  if (b) {
+    let dot = "", right = "", rcls = "", sub;
+    if (b.running) { dot = " warn"; right = "in corso"; sub = b.running; }
+    else if (b.failed.length) { dot = " bad"; right = "errore"; rcls = " bad"; sub = "fallito: " + b.failed.join(", "); }
+    else if (!b.jobs) { sub = "nessun job configurato"; }
+    else if (!b.admin_covered) { dot = " warn"; sub = "registro admin non salvato"; }
+    else { dot = b.last_ok ? " ok" : " warn"; sub = b.last_ok ? "ultimo riuscito " + fmtAgo(st.now - b.last_ok) : "mai eseguito"; }
+    $("#nav-backup-dot").className = "dot" + dot;
+    const r = $("#nav-backup-r");
+    r.textContent = right; r.className = "fw-rate" + rcls;
+    $("#nav-backup-s").textContent = sub;
+  }
+}
+
 function renderSidebar() {
+  renderNav();
   const ul = $("#fwlist");
   ul.replaceChildren();
   for (const f of st.fws) {
@@ -619,12 +962,17 @@ function renderSidebar() {
 /* ---------------- area principale ---------------- */
 
 function renderMain() {
-  const f = selectedFw(), s = selectedSrv();
-  const show = st.sel != null && (f || !st.loaded);
-  const showS = sv.sel != null && (s || !st.srvLoaded);
+  const page = st.page;
+  const f = page ? null : selectedFw(), s = page ? null : selectedSrv();
+  const show = !page && st.sel != null && (f || !st.loaded);
+  const showS = !page && sv.sel != null && (s || !st.srvLoaded);
   $("#view").hidden = !show;
   $("#sview").hidden = !showS;
-  $("#empty").hidden = show || showS;
+  $("#aview").hidden = page !== "admin";
+  $("#bview").hidden = page !== "backup";
+  $("#empty").hidden = show || showS || !!page;
+  if (page === "admin") renderAdminHead();
+  if (page === "backup") { renderBkHead(); renderNav(); }
   if (st.sel != null && st.loaded && !f) {
     $("#empty-text").textContent = "Il firewall selezionato non esiste più. Scegline un altro dalla barra laterale.";
   } else if (sv.sel != null && st.srvLoaded && !s) {
@@ -655,9 +1003,22 @@ function retentionText(f) {
 }
 
 function onHash() {
-  const m = /^#fw-(\d+)$/.exec(location.hash), ms = /^#srv-(\d+)$/.exec(location.hash);
+  const h = location.hash;
+  const m = /^#fw-(\d+)$/.exec(h), ms = /^#srv-(\d+)$/.exec(h), ma = /^#admin(?::(.+))?$/.exec(h);
   const id = m ? Number(m[1]) : null, sid = ms ? Number(ms[1]) : null;
-  if (id === st.sel && sid === sv.sel) return;
+  const page = ma ? "admin" : h === "#backup" ? "backup" : null;
+  let dev = null;
+  try { dev = ma && ma[1] ? decodeURIComponent(ma[1]) : null; } catch (_) { /* hash non valido */ }
+  if (id === st.sel && sid === sv.sel && page === st.page && (page !== "admin" || dev === ad.dev)) return;
+  const prevPage = st.page;
+  st.page = page;
+  if (page === "admin" && (prevPage !== "admin" || dev !== ad.dev)) {
+    ad.dev = dev;
+    resetAdFilters(dev);
+    loadAdFacets();
+    loadAdRows();
+  }
+  if (page === "backup" && prevPage !== "backup") loadBackup();
   if (id !== st.sel) {
     st.sel = id;
     st.wasDeleting = null;
@@ -680,7 +1041,7 @@ function onHash() {
     $("#snone").hidden = true;
     showSrvError(null);
   }
-  if (id == null && sid == null) document.title = "fwlog";
+  if (id == null && sid == null && !page) document.title = "fwlog";
   renderSidebar();
   renderMain();
   if (id != null) { loadFacets(); loadRows(); }
@@ -1550,6 +1911,793 @@ $("#as-copy").addEventListener("click", async () => {
 });
 // il token non resta nella pagina dopo la chiusura
 dlgAdd.addEventListener("close", () => { asData = null; $("#as-cmd").textContent = ""; });
+
+/* ---------------- registro accessi amministratori ---------------- */
+
+const ad = { rows: [], more: false, filters: {}, seq: 0, dev: null };
+const aForm = $("#afilters");
+for (const [k, v] of Object.entries(KIND)) addOpt($("#af-kind"), k, v);
+$("#nav-admin").addEventListener("click", () => { location.hash = "admin"; });
+$("#nav-backup").addEventListener("click", () => { location.hash = "backup"; });
+$("#b-admin").addEventListener("click", () => {
+  const f = selectedFw();
+  if (f) location.hash = "admin:" + encodeURIComponent("fw-" + f.ip);
+});
+
+function showAdError(msg) {
+  $("#ad-err").textContent = msg || "";
+  $("#ad-err").hidden = !msg;
+}
+
+function ensureDevOpt(dev) {
+  const sel = $("#af-dev");
+  if (dev && ![...sel.options].some((o) => o.value === dev)) addOpt(sel, dev, dev.replace(/^(fw|srv)-/, ""));
+}
+
+function resetAdFilters(dev) {
+  aForm.reset();
+  ensureDevOpt(dev);
+  $("#af-dev").value = dev || "";
+  ad.filters = readFilters(aForm);
+  ad.rows = []; ad.more = false;
+  $("#arows").replaceChildren();
+  $("#acount").textContent = "";
+  $("#a-more").hidden = true;
+  $("#anone").hidden = true;
+  showAdError(null);
+}
+
+function renderAdminHead() {
+  const a = st.admin, b = st.backup;
+  const info = [];
+  if (a) {
+    info.push("Conservazione: server " + daysText(a.win_retention_days) + " (predefinita, modificabile per server)");
+    info.push("login ai firewall " + daysText(a.fw_retention_days));
+    if (a.fail_24h) info.push(nf.format(a.fail_24h) + " accessi falliti nelle ultime 24 ore");
+  }
+  $("#ad-info").textContent = info.join(" · ");
+  const box = $("#ad-warns");
+  box.replaceChildren();
+  const add = (t, bad) => box.append(el("p", "warn-box" + (bad ? " bad" : ""), t));
+  if (a) {
+    for (const [d, what] of [[a.fw_retention_days, "dei login ai firewall"], [a.win_retention_days, "predefinita dei server"]]) {
+      if (d > 0 && d < 180) add("Il Garante privacy chiede di conservare gli accessi degli amministratori per almeno 6 mesi: la conservazione " + what + " è di " + daysText(d) + ".", true);
+    }
+  }
+  if (b && !b.admin_covered) add("Nessun job di backup attivo salva questo registro fuori dalla VM. Configuralo nella pagina Backup.");
+  document.title = "Accessi amministratori · fwlog";
+}
+
+async function loadAdFacets() {
+  try {
+    const d = await api("/api/admin/facets");
+    const sel = $("#af-dev"), cur = sel.value;
+    sel.replaceChildren();
+    addOpt(sel, "", "Tutti");
+    const group = (label, items) => {
+      if (!items.length) return;
+      const g = document.createElement("optgroup");
+      g.label = label;
+      for (const x of items) {
+        const o = document.createElement("option");
+        o.value = x.id;
+        o.textContent = x.name + (x.ip && x.ip !== x.name ? " (" + x.ip + ")" : "");
+        g.append(o);
+      }
+      sel.append(g);
+    };
+    group("Server Windows", d.servers);
+    group("Firewall", d.firewalls);
+    ensureDevOpt(cur);
+    sel.value = cur;
+    $("#dl-auser").replaceChildren(...d.user.map((v) => { const o = document.createElement("option"); o.value = v; return o; }));
+  } catch (_) { /* i suggerimenti sono facoltativi */ }
+}
+
+function aquery(extra) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(ad.filters)) p.set(k, v);
+  for (const [k, v] of Object.entries(extra || {})) p.set(k, v);
+  return p.toString();
+}
+
+function adRow(r) {
+  const tr = el("tr", "r " + (r.critical ? "a-crit" : r.outcome === "ok" ? "a-allow" : r.outcome === "fail" ? "a-deny" : ""));
+  tr._ad = r;
+  const td = () => tr.appendChild(el("td"));
+  const t = td(); t.className = "mono"; t.textContent = fmtTime(r.ts); t.title = fmtFull(r.ts);
+  const dv = td();
+  dv.append(vbtn("dev", (r.dt === "srv" ? "srv-" : "fw-") + r.dev_id, r.dev_name || r.dev_id),
+    el("span", "tag", r.dt === "srv" ? "server" : "firewall"));
+  const k = td();
+  k.append(vbtn("kind", r.kind, KIND[r.kind] || r.kind,
+    "badge " + (r.critical ? "crit" : r.outcome === "ok" ? "allow" : r.outcome === "fail" ? "deny" : "")));
+  const u = td();
+  if (r.account) {
+    if (r.domain) u.append(el("span", "muted", r.domain + "\\"));
+    u.append(vbtn("user", r.account));
+    if (r.elevated) { const tg = el("span", "tag admin", "admin"); tg.title = "Accesso con privilegi di amministratore"; u.append(tg); }
+  } else { u.textContent = "—"; u.className = "muted"; }
+  const o = td(); o.className = "mono";
+  if (r.src_ip) o.append(vbtn("ip", r.src_ip));
+  if (r.src_ip && r.src_host) o.append(" ");
+  if (r.src_host) o.append(el("span", null, r.src_ip ? "(" + r.src_host + ")" : r.src_host));
+  if (!r.src_ip && !r.src_host) { o.textContent = "—"; o.classList.add("muted"); }
+  const ac = td();
+  if (r.dt === "srv") ac.textContent = r.logon_type != null ? (LOGON_T[r.logon_type] || "Tipo " + r.logon_type) : (r.auth || "");
+  else ac.textContent = r.method ? r.method.toUpperCase() : "";
+  const det = td(); det.className = "msg";
+  det.textContent = r.dt === "srv" ? evDetails(r) : (r.reason || "");
+  return tr;
+}
+
+function adDetailEl(r) {
+  const tr = el("tr", "detail"), td = el("td");
+  td.colSpan = 7;
+  const kv = el("div", "kv");
+  const item = (k, v) => { if (v == null || v === "") return; const s = el("span", null, k + " "); s.append(el("b", null, v)); kv.append(s); };
+  item(r.dt === "srv" ? "Ora evento" : "Ricevuto", fmtFull(r.ts));
+  item(r.dt === "srv" ? "Server" : "Firewall", r.dev_name + (r.dt === "fw" ? " (" + r.dev_id + ")" : ""));
+  item("ID evento", r.event_id);
+  item("Autenticazione", r.auth);
+  item("Metodo", r.method);
+  item("Eseguito da", r.actor);
+  item("Destinazione", r.target);
+  item("Motivo", r.reason);
+  let text = r.raw || "";
+  if (r.dt === "srv") {
+    try { const d = JSON.parse(text || "{}"); text = Object.keys(d).map((x) => x + ": " + d[x]).join("\n"); } catch (_) { /* testo */ }
+  }
+  td.append(kv, el("pre", "raw", text));
+  tr.append(td);
+  return tr;
+}
+
+$("#arows").addEventListener("click", (e) => {
+  const b = e.target.closest("button.v");
+  if (b) { e.stopPropagation(); setAFilter(b.dataset.f, b.dataset.v, e.altKey); return; }
+  const tr = e.target.closest("tr.r");
+  if (!tr || String(window.getSelection())) return;
+  if (tr._det) { tr._det.remove(); tr._det = null; }
+  else { tr._det = adDetailEl(tr._ad); tr.after(tr._det); }
+});
+
+function setAFilter(name, value, exclude) {
+  const inp = aForm.elements[name];
+  if (!inp) return;
+  if (inp.tagName === "SELECT") {
+    if (exclude) return;
+    if (name === "dev") ensureDevOpt(value);
+    inp.value = value;
+  } else {
+    inp.value = (exclude ? "!" : "") + value;
+  }
+  applyAFilters();
+}
+
+function applyAFilters() {
+  ad.filters = readFilters(aForm);
+  loadAdRows();
+}
+
+aForm.addEventListener("submit", (e) => { e.preventDefault(); applyAFilters(); });
+aForm.addEventListener("change", (e) => { if (e.target.tagName === "SELECT") applyAFilters(); });
+$("#ab-reset").addEventListener("click", () => {
+  resetAdFilters(null);
+  if (ad.dev) { location.hash = "admin"; return; }
+  loadAdRows();
+});
+$("#ad-csv").addEventListener("click", () => { location.href = "/api/admin.csv?" + aquery(); });
+$("#ad-retention").addEventListener("click", () => {
+  const a = st.admin;
+  if (!a) return;
+  openRetention({ url: "/api/admin/settings", kind: "registro", err: showAdError, def: a.fw_retention_default,
+    item: { name: "login ai firewall", retention_days: a.fw_retention_set } });
+  $("#ret-text").textContent = "Per quanto tempo tenere i login degli amministratori ai firewall, indipendentemente dai log del firewall. Il Garante privacy chiede almeno 6 mesi.";
+});
+
+function updateAFoot() {
+  const n = ad.rows.length;
+  $("#anone").hidden = n > 0;
+  const nflt = Object.keys(ad.filters).length;
+  $("#acount").textContent = n ? nf.format(n) + (n === 1 ? " accesso" : " accessi") + (nflt ? " · " + nflt + (nflt === 1 ? " filtro attivo" : " filtri attivi") : "") : "";
+  $("#a-more").hidden = !ad.more;
+}
+
+async function loadAdRows() {
+  const seq = ++ad.seq;
+  $("#acount").textContent = "Caricamento…";
+  try {
+    const d = await api("/api/admin?" + aquery({ limit: LIMIT }));
+    if (seq !== ad.seq) return;
+    showAdError(null);
+    ad.rows = d.rows; ad.more = d.more;
+    $("#arows").replaceChildren(...d.rows.map(adRow));
+    $("#awrap").scrollTop = 0;
+  } catch (e) {
+    if (seq !== ad.seq) return;
+    showAdError(e.message);
+    ad.rows = []; ad.more = false;
+    $("#arows").replaceChildren();
+  }
+  updateAFoot();
+}
+
+$("#a-more").addEventListener("click", async () => {
+  const last = ad.rows[ad.rows.length - 1];
+  if (!last) return;
+  const seq = ad.seq, btn = $("#a-more");
+  btn.disabled = true;
+  try {
+    const d = await api("/api/admin?" + aquery({ limit: LIMIT, bts: last.ts, bdt: last.dt, bid: last.id }));
+    if (seq !== ad.seq) return;
+    ad.rows = ad.rows.concat(d.rows); ad.more = d.more;
+    $("#arows").append(...d.rows.map(adRow));
+  } catch (e) { showAdError(e.message); }
+  finally { btn.disabled = false; updateAFoot(); }
+});
+
+/* ---------------- backup ---------------- */
+
+const bk = { data: null, timer: null, msg: null };
+const CONTENT = { admin: "Accessi admin", firewall: "Log firewall", config: "Configurazione" };
+const RTYPE = { local: "Cartella", s3: "S3", smb: "SMB" };
+const WEEK = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"];
+
+function schedText(s) {
+  if (!s || s.freq === "manual") return "Solo manuale";
+  if (s.freq === "daily") return "Ogni giorno alle " + s.time;
+  if (s.freq === "weekly") return "Ogni " + s.days.map((d) => WEEK[d - 1]).join(", ") + " alle " + s.time;
+  if (s.freq === "monthly") return "Il " + s.mday + " di ogni mese alle " + s.time;
+  return "Ogni " + s.every + (s.every === 1 ? " ora" : " ore") + " dalle " + s.time;
+}
+function fmtWhen(ts) {
+  if (ts == null) return "—";
+  const d = new Date(ts);
+  return d.toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" }) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+function fmtDur(ms) {
+  if (ms == null || ms < 0) return "—";
+  const s = Math.round(ms / 1000);
+  return s < 60 ? s + " s" : Math.floor(s / 60) + " min " + (s % 60) + " s";
+}
+
+function bkMessage(text, cls) {
+  bk.msg = text ? { text, cls, at: Date.now() } : null;
+  renderBkWarns();
+}
+
+async function loadBackup() {
+  clearTimeout(bk.timer);
+  try {
+    bk.data = await api("/api/backup");
+  } catch (e) {
+    bkMessage("Impossibile leggere lo stato dei backup: " + e.message, "bad");
+  }
+  if (st.page === "backup") renderBackup();
+  if (st.page === "backup" || dlgRs.open) {
+    bk.timer = setTimeout(loadBackup, bk.data && bk.data.task ? 1500 : 15000);
+  }
+}
+
+function renderBkHead() {
+  const d = bk.data;
+  $("#bk-info").textContent = d ? "Macchina " + d.host + " · spazio libero sul disco dati " + fmtBytes(d.disk_free) : "";
+  document.title = "Backup · fwlog";
+}
+
+function renderBkWarns() {
+  const box = $("#bk-warns"), d = bk.data;
+  box.replaceChildren();
+  const add = (t, cls) => { const p = el("p", "warn-box" + (cls ? " " + cls : ""), t); box.append(p); return p; };
+  if (bk.msg && Date.now() - bk.msg.at < 120e3) add(bk.msg.text, bk.msg.cls);
+  if (!d) return;
+  if (d.task) {
+    const p = add("", null);
+    p.classList.add("task");
+    p.append(el("span", "spin"), el("span", null, d.task.label[0].toUpperCase() + d.task.label.slice(1) + ": " + d.task.phase +
+      " (" + fmtDur(d.now - d.task.started) + ")"));
+  } else if (d.last && d.now - d.last.at < 600e3 && !(bk.msg && bk.msg.at > d.last.at)) {
+    const lbl = d.last.label[0].toUpperCase() + d.last.label.slice(1);
+    add(d.last.ok ? lbl + " completato." : lbl + " non riuscito: " + d.last.msg, d.last.ok ? "ok" : "bad");
+  }
+  if (!d.smbclient && d.repos.some((r) => r.type === "smb")) {
+    add("smbclient non è installato: le destinazioni SMB non funzionano. Rieseguire install.sh.", "bad");
+  }
+  if (d.jobs.length && !d.jobs.some((j) => j.enabled && j.contents.includes("admin"))) {
+    add("Nessun job attivo salva gli accessi amministratori: il registro richiesto dal Garante resta solo su questa VM.");
+  }
+}
+
+function actBtn(text, fn, cls) {
+  const b = el("button", "btn small" + (cls ? " " + cls : ""), text);
+  b.type = "button";
+  b.addEventListener("click", fn);
+  return b;
+}
+
+function renderBackup() {
+  renderBkHead();
+  renderBkWarns();
+  const d = bk.data;
+  if (!d) return;
+  const repoName = Object.fromEntries(d.repos.map((r) => [r.id, r.name]));
+  const busy = !!d.task;
+  // job
+  const tj = $("#bk-jobs");
+  tj.replaceChildren();
+  for (const j of d.jobs) {
+    const tr = el("tr");
+    const n = el("td");
+    n.append(el("b", null, j.name));
+    if (!j.enabled) n.append(el("span", "tag", "sospeso"));
+    if (j.encrypted) { const t = el("span", "tag", "cifrato"); t.title = "AES-256"; n.append(t); }
+    const c = el("td");
+    for (const x of j.contents) c.append(el("span", "chip" + (x === "admin" ? " admin" : ""), CONTENT[x]));
+    const last = el("td", "nw");
+    if (j.last_run) {
+      last.append(el("span", "badge " + (j.last_status === "ok" ? "allow" : "deny"), j.last_status === "ok" ? "ok" : "errore"), " " + fmtWhen(j.last_run));
+      last.title = j.last_msg || "";
+    } else last.append(el("span", "muted", "mai"));
+    const acts = el("td", "acts");
+    const run = actBtn("Esegui ora", async () => {
+      try { await postJson("/api/backup/jobs/" + j.id + "/run", {}); bkMessage(null); loadBackup(); }
+      catch (e) { bkMessage(e.message, "bad"); }
+    });
+    run.disabled = busy;
+    acts.append(run, actBtn("Modifica", () => openJob(j)), actBtn("Elimina", () => openConfirm({
+      title: "Eliminare il job?", ok: "Elimina job", err: (m) => bkMessage(m, "bad"),
+      text: "Il job «" + j.name + "» non verrà più eseguito. I backup già salvati restano nella destinazione.",
+      run: async () => { await api("/api/backup/jobs/" + j.id, { method: "DELETE" }); loadBackup(); loadFirewalls(); },
+    }), "danger"));
+    tr.append(n, c, el("td", null, repoName[j.repo_id] || "—"), el("td", null, schedText(j.schedule)),
+      el("td", "nw", j.keep ? String(j.keep) : "tutte"), last,
+      el("td", "nw", j.enabled && j.next_run ? fmtWhen(j.next_run) : "—"), acts);
+    tj.append(tr);
+  }
+  $("#bk-jobs-empty").hidden = d.jobs.length > 0;
+  // destinazioni
+  const tr_ = $("#bk-repos");
+  tr_.replaceChildren();
+  for (const r of d.repos) {
+    const tr = el("tr");
+    const acts = el("td", "acts");
+    acts.append(actBtn("Prova", async (e) => {
+      const b = e.currentTarget;
+      b.disabled = true; b.textContent = "Prova…";
+      try {
+        const res = await postJson("/api/backup/repos/test", { id: r.id, name: r.name, type: r.type, config: r.config });
+        bkMessage("«" + r.name + "»: " + res.msg, res.ok ? "ok" : "bad");
+      } catch (err) { bkMessage(err.message, "bad"); }
+      finally { b.disabled = false; b.textContent = "Prova"; }
+    }), actBtn("Backup salvati", () => openRestore(r.id)), actBtn("Modifica", () => openRepo(r)),
+    actBtn("Elimina", () => openConfirm({
+      title: "Eliminare la destinazione?", ok: "Elimina destinazione", err: (m) => bkMessage(m, "bad"),
+      text: "La destinazione «" + r.name + "» viene tolta da fwlog. I file già salvati non vengono cancellati.",
+      run: async () => { await api("/api/backup/repos/" + r.id, { method: "DELETE" }); loadBackup(); },
+    }), "danger"));
+    const w = el("td", "mono");
+    w.textContent = r.where;
+    tr.append(el("td", null, r.name), el("td", null, RTYPE[r.type]), w, acts);
+    tr_.append(tr);
+  }
+  $("#bk-repos-empty").hidden = d.repos.length > 0;
+  // cronologia
+  const tr2 = $("#bk-runs");
+  tr2.replaceChildren();
+  for (const r of d.runs) {
+    const tr = el("tr");
+    const ok = r.status === "ok", run = r.status === "running";
+    const s = el("td", "nw");
+    s.append(el("span", "badge " + (ok ? "allow" : run ? "" : "deny"), ok ? "ok" : run ? "in corso" : "errore"));
+    const det = el("td", ok ? "mono small" : "small");
+    det.textContent = r.kind === "restore" ? (ok ? "ripristinato: " + r.msg : r.msg) + (r.file ? " · " + r.file : "") : (r.msg || "");
+    tr.append(el("td", "nw", fmtWhen(r.started)), el("td", null, r.kind === "restore" ? "Ripristino" : r.job_name), s,
+      el("td", "nw", run ? "—" : fmtDur(r.ended - r.started)), el("td", "nw", r.size ? fmtBytes(r.size) : "—"), det);
+    tr2.append(tr);
+  }
+  $("#bk-runs-empty").hidden = d.runs.length > 0;
+}
+
+/* ---- destinazioni ---- */
+const dlgRepo = $("#dlg-repo"), rpForm = dlgRepo.querySelector("form");
+let rpEdit = null, rpPathTouched = false;
+
+function rpType() {
+  for (const d of dlgRepo.querySelectorAll("[data-t]")) d.hidden = d.dataset.t !== rpForm.elements.type.value;
+}
+rpForm.elements.type.addEventListener("change", rpType);
+rpForm.elements.path_style.addEventListener("change", () => { rpPathTouched = true; });
+rpForm.elements.endpoint.addEventListener("input", () => {
+  const v = rpForm.elements.endpoint.value.trim();
+  if (!rpPathTouched) rpForm.elements.path_style.checked = !!v && !/amazonaws\.com/i.test(v);
+});
+function rpMsg(id, text, bad) {
+  const p = $(id);
+  p.textContent = text || "";
+  p.hidden = !text;
+  if (id === "#rp-test") p.className = "test-res" + (bad ? " bad" : "");
+}
+
+function openRepo(r) {
+  rpEdit = r || null;
+  rpPathTouched = !!r;
+  rpForm.reset();
+  const f = rpForm.elements;
+  $("#rp-title").textContent = r ? "Modifica «" + r.name + "»" : "Nuova destinazione";
+  for (const k of ["secret_key", "password"]) f[k].placeholder = "";
+  if (r) {
+    f.name.value = r.name;
+    f.type.value = r.type;
+    for (const [k, v] of Object.entries(r.config)) {
+      const inp = f[k];
+      if (!inp || !inp.tagName) continue;
+      if (inp.type === "checkbox") inp.checked = !!v;
+      else inp.value = k === "prefix" ? String(v).replace(/\/$/, "") : v;
+    }
+    if (r.config.has_secret_key) f.secret_key.placeholder = "salvata: lascia vuoto per non cambiarla";
+    if (r.config.has_password) f.password.placeholder = "salvata: lascia vuoto per non cambiarla";
+  }
+  rpType();
+  rpMsg("#rp-test", null);
+  rpMsg("#rp-err", null);
+  dlgRepo.returnValue = "";
+  dlgRepo.showModal();
+  f.name.focus();
+}
+
+function rpPayload() {
+  const f = rpForm.elements, t = f.type.value, cfg = {};
+  const keys = { local: ["path"], s3: ["endpoint", "region", "bucket", "prefix", "access_key", "secret_key"],
+    smb: ["server", "share", "folder", "user", "password", "domain"] }[t];
+  for (const k of keys) cfg[k] = f[k].value.trim();
+  if (t === "s3") { cfg.path_style = f.path_style.checked; cfg.verify_tls = f.verify_tls.checked; }
+  return { id: rpEdit && rpEdit.id, name: f.name.value.trim() || "prova", type: t, config: cfg };
+}
+
+$("#bk-addrepo").addEventListener("click", () => openRepo(null));
+$("#rp-testbtn").addEventListener("click", async () => {
+  const b = $("#rp-testbtn");
+  b.disabled = true;
+  rpMsg("#rp-err", null);
+  rpMsg("#rp-test", "Prova in corso…");
+  try {
+    const r = await postJson("/api/backup/repos/test", rpPayload());
+    rpMsg("#rp-test", r.msg, !r.ok);
+  } catch (e) { rpMsg("#rp-test", null); rpMsg("#rp-err", e.message); }
+  finally { b.disabled = false; }
+});
+rpForm.addEventListener("submit", async (e) => {
+  if (!e.submitter || e.submitter.value !== "save") return;
+  e.preventDefault();
+  const p = rpPayload();
+  p.name = rpForm.elements.name.value.trim();
+  try {
+    await postJson("/api/backup/repos" + (rpEdit ? "/" + rpEdit.id : ""), p);
+    dlgRepo.close();
+    loadBackup();
+  } catch (err) { rpMsg("#rp-err", err.message); }
+});
+
+/* ---- job ---- */
+const dlgJob = $("#dlg-job"), jbForm = dlgJob.querySelector("form");
+let jbEdit = null;
+for (let i = 1; i <= 7; i++) {
+  const l = el("label", "c");
+  const c = document.createElement("input");
+  c.type = "checkbox"; c.name = "d" + i;
+  l.append(c, " " + WEEK[i - 1]);
+  dlgJob.querySelector(".days").append(l);
+}
+function jbSched() {
+  const f = jbForm.elements, fq = f.freq.value;
+  const show = { time: fq !== "manual", mday: fq === "monthly", every: fq === "hours", days: fq === "weekly", pw: f.encrypt.checked };
+  for (const e of dlgJob.querySelectorAll("[data-s]")) e.hidden = !show[e.dataset.s];
+}
+jbForm.addEventListener("change", jbSched);
+
+function openJob(j) {
+  const d = bk.data;
+  if (!d || !d.repos.length) { bkMessage("Crea prima una destinazione.", "bad"); return; }
+  jbEdit = j || null;
+  jbForm.reset();
+  const f = jbForm.elements, sel = f.repo_id;
+  sel.replaceChildren();
+  for (const r of d.repos) addOpt(sel, String(r.id), r.name + " (" + RTYPE[r.type] + ")");
+  $("#jb-title").textContent = j ? "Modifica «" + j.name + "»" : "Nuovo job di backup";
+  f.password.placeholder = f.password2.placeholder = "";
+  if (j) {
+    f.name.value = j.name;
+    sel.value = String(j.repo_id);
+    f.c_admin.checked = j.contents.includes("admin");
+    f.c_firewall.checked = j.contents.includes("firewall");
+    const s = j.schedule;
+    f.freq.value = s.freq;
+    f.time.value = s.time || "02:30";
+    if (s.mday) f.mday.value = s.mday;
+    if (s.every) f.every.value = s.every;
+    for (let i = 1; i <= 7; i++) f["d" + i].checked = (s.days || []).includes(i);
+    f.keep.value = j.keep;
+    f.encrypt.checked = j.encrypted;
+    if (j.encrypted) f.password.placeholder = f.password2.placeholder = "lascia vuoto per non cambiarla";
+    f.enabled.checked = !!j.enabled;
+  } else {
+    f.d7.checked = true;
+    f.encrypt.checked = d.repos.length > 0 && d.repos[0].type !== "local";
+  }
+  jbSched();
+  $("#jb-err").hidden = true;
+  dlgJob.returnValue = "";
+  dlgJob.showModal();
+  f.name.focus();
+}
+$("#bk-addjob").addEventListener("click", () => openJob(null));
+jbForm.addEventListener("submit", async (e) => {
+  if (!e.submitter || e.submitter.value !== "save") return;
+  e.preventDefault();
+  const f = jbForm.elements, err = (m) => { $("#jb-err").textContent = m; $("#jb-err").hidden = false; };
+  if (f.password.value !== f.password2.value) return err("Le due password non coincidono.");
+  if (f.encrypt.checked && !f.password.value && !(jbEdit && jbEdit.encrypted)) return err("Indica la password di cifratura.");
+  const contents = [];
+  if (f.c_admin.checked) contents.push("admin");
+  if (f.c_firewall.checked) contents.push("firewall");
+  const days = [];
+  for (let i = 1; i <= 7; i++) if (f["d" + i].checked) days.push(i);
+  const body = {
+    name: f.name.value.trim(), repo_id: Number(f.repo_id.value), contents, keep: Number(f.keep.value),
+    schedule: { freq: f.freq.value, time: f.time.value, days, mday: Number(f.mday.value), every: Number(f.every.value) },
+    encrypt: f.encrypt.checked, enabled: f.enabled.checked,
+  };
+  if (f.encrypt.checked && f.password.value) body.password = f.password.value;
+  try {
+    await postJson("/api/backup/jobs" + (jbEdit ? "/" + jbEdit.id : ""), body);
+    dlgJob.close();
+    loadBackup();
+    loadFirewalls();
+  } catch (x) { err(x.message); }
+});
+
+/* ---- esportazione / importazione della configurazione ---- */
+const dlgExp = $("#dlg-export");
+$("#bk-export").addEventListener("click", () => { dlgExp.returnValue = ""; dlgExp.showModal(); });
+dlgExp.addEventListener("close", () => {
+  if (dlgExp.returnValue === "ok") location.href = "/api/backup/config?secrets=" + dlgExp.querySelector("form").elements.sec.value;
+});
+$("#bk-import").addEventListener("click", () => { $("#bk-import-file").value = ""; $("#bk-import-file").click(); });
+$("#bk-import-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    let obj;
+    try { obj = JSON.parse(await file.text()); } catch (_) { throw new Error("il file non è un JSON valido"); }
+    const r = await postJson("/api/backup/config", obj);
+    bkMessage("Configurazione importata: " + r.repos + (r.repos === 1 ? " destinazione" : " destinazioni") + " e " +
+      r.jobs + " job. Prova le destinazioni e reinserisci le password se il file non le conteneva.", "ok");
+    loadBackup();
+    loadFirewalls();
+  } catch (x) { bkMessage("Importazione non riuscita: " + x.message, "bad"); }
+});
+
+/* ---- ripristino ---- */
+const dlgRs = $("#dlg-restore"), rsForm = dlgRs.querySelector("form");
+const rs = { step: "src", files: [], seq: 0, done: false };
+
+function rsShow(id, on) { $(id).hidden = !on; }
+function rsErr(m) { $("#rs-err").textContent = m || ""; rsShow("#rs-err", !!m); }
+function rsStep(step) {
+  rs.step = step;
+  rsShow("#rs-src", step === "src");
+  rsShow("#rs-pick", step === "pick");
+  rsShow("#rs-next", step === "src");
+  rsShow("#rs-run", step === "pick");
+  rsShow("#rs-back", step === "pick");
+  $("#rs-cancel").textContent = step === "done" ? "Chiudi" : "Annulla";
+}
+function rsBusy(text) {
+  rsShow("#rs-busy", !!text);
+  $("#rs-phase").textContent = text || "";
+  for (const b of ["#rs-next", "#rs-run", "#rs-back"]) $(b).disabled = !!text;
+}
+
+function rsFrom() {
+  const v = rsForm.elements.from.value;
+  rsShow("#rs-repo", v === "repo");
+  rsShow("#rs-file", v === "file");
+}
+rsForm.elements.from.forEach((r) => r.addEventListener("change", rsFrom));
+rsForm.elements.repo.addEventListener("change", loadRsList);
+
+async function loadRsList() {
+  const ul = $("#rs-list"), id = rsForm.elements.repo.value, seq = ++rs.seq;
+  ul.replaceChildren(el("li", "none muted", id ? "Lettura dei backup…" : "Nessuna destinazione configurata."));
+  if (!id) return;
+  try {
+    const d = await api("/api/backup/repos/" + id + "/files");
+    if (seq !== rs.seq) return;
+    rs.files = d.files;
+    ul.replaceChildren();
+    if (!d.files.length) ul.append(el("li", "none muted", "Nessun backup in questa destinazione."));
+    d.files.forEach((f, i) => {
+      const li = el("li"), l = el("label"), r = document.createElement("input");
+      r.type = "radio"; r.name = "pick"; r.value = f.name; if (i === 0) r.checked = true;
+      const m = f.meta || {};
+      const when = m.created ? fmtFull(m.created).slice(0, -4) : (f.mtime ? fmtFull(f.mtime).slice(0, -4) : f.name);
+      l.append(r, el("b", null, when + (m.job ? " · " + m.job : "")), el("span", "muted small", fmtBytes(f.size)));
+      const sub = el("span", "sub");
+      sub.textContent = (m.contents ? m.contents.map((c) => CONTENT[c]).join(", ") + " · " : "") +
+        (m.host ? "da " + m.host + " · " : "") + (m.encrypted ? "cifrato · " : "") + f.name;
+      l.append(sub);
+      li.append(l);
+      ul.append(li);
+    });
+  } catch (e) {
+    if (seq !== rs.seq) return;
+    ul.replaceChildren(el("li", "none", e.message));
+  }
+}
+
+async function rsWait() {
+  for (;;) {
+    const d = await api("/api/backup");
+    bk.data = d;
+    if (!d.task) return d;
+    rsBusy(d.task.phase[0].toUpperCase() + d.task.phase.slice(1) + "… (" + fmtDur(d.now - d.task.started) + ")");
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+function rsUpload(file) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest(), prog = $("#rs-prog");
+    x.open("POST", "/api/restore/upload?name=" + encodeURIComponent(file.name));
+    x.setRequestHeader("Content-Type", "application/octet-stream");
+    prog.hidden = false; prog.value = 0;
+    x.upload.onprogress = (e) => { if (e.lengthComputable) { prog.value = e.loaded / e.total; rsBusy("Caricamento " + Math.round(e.loaded / e.total * 100) + "%"); } };
+    x.onload = () => {
+      prog.hidden = true;
+      let d = null;
+      try { d = JSON.parse(x.responseText); } catch (_) { /* non JSON */ }
+      if (x.status === 200) resolve(d); else reject(new Error((d && d.error) || "Errore HTTP " + x.status));
+    };
+    x.onerror = () => { prog.hidden = true; reject(new Error("caricamento interrotto")); };
+    x.send(file);
+  });
+}
+
+function rsMeta(m, origin) {
+  const dl = $("#rs-meta");
+  dl.replaceChildren();
+  const row = (k, v) => { dl.append(el("dt", null, k), el("dd", null, v)); };
+  row("Backup", origin || m.file || "");
+  row("Creato", fmtFull(m.created).slice(0, -4) + " su " + m.host + (m.job ? " (job «" + m.job + "»)" : ""));
+  const c = m.counts || {}, r = m.ranges || {};
+  const range = (t) => r[t] ? " dal " + fmtFull(r[t][0]).slice(0, 10) + " al " + fmtFull(r[t][1]).slice(0, 10) : "";
+  if (m.contents.includes("admin")) {
+    $("#rs-admin-n").textContent = nf.format(c.events || 0) + " eventi di " + nf.format(c.servers || 0) + " server" + range("events") +
+      " · " + nf.format(c.fw_admin || 0) + " login ai firewall" + range("fw_admin");
+  }
+  if (m.contents.includes("firewall")) {
+    $("#rs-fw-n").textContent = nf.format(c.logs || 0) + " log di " + nf.format(c.firewalls || 0) + " firewall" + range("logs") +
+      ". Sostituiscono tutti i log attuali; durante il ripristino i nuovi log restano in coda.";
+  }
+  const f = rsForm.elements;
+  for (const sec of ["admin", "firewall", "config"]) {
+    const has = m.contents.includes(sec);
+    for (const e of dlgRs.querySelectorAll("[data-sec=" + sec + "]")) e.hidden = !has;
+    f["s_" + sec].checked = has && (sec === "admin" || (sec === "config" && !(bk.data && bk.data.jobs.length)));
+  }
+  f.mode.value = "merge";
+  rsWarn();
+}
+function rsWarn() {
+  const f = rsForm.elements, m = bk.data && bk.data.stage && bk.data.stage.meta;
+  const parts = [];
+  if (f.s_admin.checked && f.mode.value === "replace" && m) parts.push("Server e accessi registrati dopo il " + fmtFull(m.created).slice(0, -4) + " verranno eliminati.");
+  if (f.s_firewall.checked) parts.push("I log dei firewall attuali verranno sostituiti da quelli del backup.");
+  parts.push("I dati più vecchi della conservazione impostata vengono eliminati entro un minuto: per consultare log vecchi aumenta prima la conservazione.");
+  $("#rs-warn").textContent = parts.join(" ");
+  $("#rs-run").disabled = !(f.s_admin.checked || f.s_firewall.checked || f.s_config.checked);
+}
+rsForm.addEventListener("change", (e) => { if (rs.step === "pick" && e.target.name !== "from") rsWarn(); });
+
+async function openRestore(repoId) {
+  rsForm.reset();
+  rs.done = false;
+  rsErr(null);
+  rsShow("#rs-done", false);
+  rsShow("#rs-prog", false);
+  rsBusy(null);
+  const d = await api("/api/backup").catch(() => bk.data);
+  if (!d) { bkMessage("Impossibile leggere lo stato dei backup.", "bad"); return; }
+  bk.data = d;
+  const sel = rsForm.elements.repo;
+  sel.replaceChildren();
+  for (const r of d.repos) addOpt(sel, String(r.id), r.name + " (" + RTYPE[r.type] + ")");
+  if (repoId != null) sel.value = String(repoId);
+  rsForm.elements.from.value = d.repos.length ? "repo" : "file";
+  rsFrom();
+  if (d.stage && d.stage.meta && !d.task) { rsStep("pick"); rsMeta(d.stage.meta, d.stage.origin); }
+  else rsStep("src");
+  dlgRs.returnValue = "";
+  dlgRs.showModal();
+  if (rs.step === "src" && d.repos.length) loadRsList();
+  if (d.task) { rsBusy("…"); rsWait().then(() => rsBusy(null)); }
+}
+$("#bk-restore").addEventListener("click", () => openRestore(null));
+$("#rs-back").addEventListener("click", () => { rsErr(null); rsStep("src"); if (rsForm.elements.from.value === "repo") loadRsList(); });
+
+$("#rs-next").addEventListener("click", async () => {
+  rsErr(null);
+  const f = rsForm.elements, password = f.password.value;
+  try {
+    if (f.from.value === "file") {
+      const file = f.file.files[0];
+      if (!file) throw new Error("Scegli il file .fwbk da ripristinare.");
+      rsBusy("Caricamento…");
+      await rsUpload(file);
+      await postJson("/api/restore/prepare", { password });
+    } else {
+      const pick = rsForm.querySelector("input[name=pick]:checked");
+      if (!pick) throw new Error("Scegli un backup dall'elenco.");
+      rsBusy("Avvio…");
+      await postJson("/api/restore/prepare", { repo_id: Number(f.repo.value), name: pick.value, password });
+    }
+    const d = await rsWait();
+    rsBusy(null);
+    if (!d.last || !d.last.ok || !d.stage || !d.stage.meta) {
+      const msg = (d.last && !d.last.ok && d.last.msg) || "preparazione non riuscita";
+      rsErr(msg[0].toUpperCase() + msg.slice(1) + ".");
+      if (/password/.test(msg)) f.password.focus();
+      return;
+    }
+    rsStep("pick");
+    rsMeta(d.stage.meta, d.stage.origin);
+  } catch (e) { rsBusy(null); rsErr(e.message); }
+});
+
+$("#rs-run").addEventListener("click", async () => {
+  const f = rsForm.elements, sections = [];
+  for (const s of ["admin", "firewall", "config"]) if (f["s_" + s].checked && !f["s_" + s].closest("[hidden]")) sections.push(s);
+  if (!sections.length) return;
+  rsErr(null);
+  try {
+    rsBusy("Avvio…");
+    await postJson("/api/restore/run", { sections, admin_mode: f.mode.value });
+    const d = await rsWait();
+    rsBusy(null);
+    if (!d.last || !d.last.ok) { rsErr(d.last ? d.last.msg : "ripristino non riuscito"); return; }
+    rs.done = true;
+    rsStep("done");
+    rsShow("#rs-pick", false);
+    $("#rs-done").textContent = "Ripristino completato.";
+    rsShow("#rs-done", true);
+    loadFirewalls();
+    loadBackup();
+  } catch (e) { rsBusy(null); rsErr(e.message); }
+});
+
+dlgRs.addEventListener("close", () => {
+  rs.seq++;
+  // un backup preparato e non ripristinato occupa spazio sul disco dati: lo elimina
+  if (!rs.done && bk.data && bk.data.stage && !bk.data.task) api("/api/restore", { method: "DELETE" }).catch(() => {});
+  if (st.page === "backup") loadBackup();
+});
+
+// Invio in un campo: il primo pulsante di invio del form e' "Annulla", quindi senza
+// questo Invio chiuderebbe la finestra perdendo quanto scritto
+for (const fm of [rpForm, jbForm, dlgRename.querySelector("form"), dlgRet.querySelector("form")]) {
+  fm.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.type === "checkbox" || e.target.type === "radio") return;
+    e.preventDefault();
+    fm.querySelector("button[value=save], button[value=ok]").click();
+  });
+}
+rsForm.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.tagName === "INPUT") {
+    e.preventDefault();
+    if (rs.step === "src") $("#rs-next").click();
+  }
+});
 
 /* ---------------- avvio ---------------- */
 

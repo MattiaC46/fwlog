@@ -17,6 +17,10 @@ PowerShell pianificato: nessun programma da installare (vedi [sezione 5](#5-acce
   `chiave=valore`. Gli altri messaggi vengono comunque salvati e sono cercabili per testo.
 - Conservazione automatica (90 giorni di default, modificabile per ogni firewall),
   eliminazione dei log dalla dashboard e protezione del disco pieno.
+- **Registro accessi amministratori** separato (server Windows e login ai firewall), con
+  conservazione propria, per il provvedimento del Garante sugli amministratori di sistema.
+- **Backup pianificati** dalla dashboard su disco o NAS montato, S3 (AWS, Wasabi, Backblaze,
+  MinIO...) o condivisione SMB, con cifratura, e **ripristino** anche su una macchina nuova.
 
 Non è un SIEM: niente correlazione, alert o gestione utenti.
 
@@ -32,12 +36,14 @@ Non è un SIEM: niente correlazione, alert o gestione utenti.
 3. [Primo accesso](#3-primo-accesso)
 4. [Configurazione dei firewall](#4-configurazione-dei-firewall)
 5. [Accessi degli amministratori (server Windows)](#5-accessi-degli-amministratori-server-windows)
-6. [Uso dei filtri](#6-uso-dei-filtri)
-7. [Configurazione](#7-configurazione)
-8. [Spazio su disco](#8-spazio-su-disco)
-9. [Gestione](#9-gestione)
-10. [Test con test-sender.py](#10-test-con-test-senderpy)
-11. [Limiti noti](#11-limiti-noti)
+6. [Registro accessi amministratori](#6-registro-accessi-amministratori)
+7. [Uso dei filtri](#7-uso-dei-filtri)
+8. [Configurazione](#8-configurazione)
+9. [Spazio su disco](#9-spazio-su-disco)
+10. [Gestione](#10-gestione)
+11. [Backup e ripristino](#11-backup-e-ripristino)
+12. [Test con test-sender.py](#12-test-con-test-senderpy)
+13. [Limiti noti](#13-limiti-noti)
 
 ---
 
@@ -119,7 +125,7 @@ sorgenti:
 sudo ALLOWED_SOURCES=192.168.1.1,192.168.1.254,10.0.10.0/24 ./install.sh
 ```
 
-Si possono impostare anche dopo, con `FWLOG_ALLOWED_SOURCES` (sezione 7).
+Si possono impostare anche dopo, con `FWLOG_ALLOWED_SOURCES` (sezione 8).
 
 Il repository è privato: per clonarlo sulla VM serve un accesso GitHub (es. `gh auth login`
 oppure un token), in alternativa copia la cartella con `scp`.
@@ -431,7 +437,47 @@ non ce ne sono più, gli accessi dei server.
 
 ---
 
-## 6. Uso dei filtri
+## 6. Registro accessi amministratori
+
+**Accessi amministratori**, in cima alla barra laterale, raccoglie in un'unica tabella:
+
+- gli eventi dei **server Windows** (sezione 5);
+- i **login degli amministratori ai firewall** (GUI web, SSH, console, Winbox), riconosciuti
+  nei syslog e copiati nel registro.
+
+| Firewall | Cosa viene riconosciuto |
+|---|---|
+| pfSense, OPNsense | login riusciti e falliti alla GUI (`Successful login`, `authentication error`, audit OPNsense), logout; SSH |
+| FortiGate | eventi di sistema `Admin login successful/failed`, `Admin logout` (GUI, SSH, console) |
+| Sophos Firewall | eventi `Admin`/`GUI`/`CLI`/`SSH` di login, login fallito e logout |
+| SonicWall | `Administrator login allowed/denied`, `Administrator logged out` |
+| MikroTik | `user ... logged in/out ... via winbox/ssh/web`, `login failure` (topic `system,account`, attivo di default) |
+| Cisco ASA/FTD | `%ASA-6-605005` (permesso), `605004` (negato), `611103` (logout) |
+| Palo Alto | log SYSTEM `User ... logged in/out via ...`, `failed authentication` (inoltrare i log SYSTEM al server syslog) |
+| Linux / UniFi / altri | OpenSSH: `Accepted`, `Failed password`, `Disconnected from user` |
+
+Il firewall deve inviare anche i suoi **eventi di sistema**, non solo il traffico: su
+FortiGate gli eventi di sistema (`config log eventfilter` → `set system enable`, attivo di
+default) con severità almeno `information` nel filtro syslog; su pfSense e OPNsense i log
+di sistema e di autenticazione oltre a quelli del firewall; su Palo Alto il log forwarding
+dei log *System*.
+
+Il registro ha una **conservazione separata** da quella dei log: si possono tenere i log
+del traffico 30–90 giorni e gli accessi admin un anno. Per i login ai firewall si imposta
+con **Conservazione firewall** (predefinita `FWLOG_ADMIN_RETENTION_DAYS`, 365 giorni); per
+i server vale quella di ogni server. **Elimina log** ed **Elimina firewall** non toccano
+il registro. Con il disco pieno il registro viene eliminato per ultimo.
+
+Filtri per dispositivo, utente, IP di origine (CIDR, `!` per escludere), tipo di evento,
+esito e periodo; **Esporta CSV** produce l'estratto da consegnare in caso di verifica.
+Dalla pagina di un firewall, **Accessi admin** apre il registro già filtrato.
+
+I formati dei login sono stati scritti dalla documentazione dei produttori: se un login
+non compare nel registro, cerca il messaggio nei log del firewall e segnalalo.
+
+---
+
+## 7. Uso dei filtri
 
 Scegli un firewall nella barra laterale, compila uno o più campi e premi **Invio**
 o **Applica filtri**. I filtri si combinano tra loro (tutti devono essere veri).
@@ -464,7 +510,7 @@ con un intervallo di tempo o con un filtro IP.
 
 ---
 
-## 7. Configurazione
+## 8. Configurazione
 
 Tutto in `/etc/fwlog/fwlog.env`; dopo una modifica: `sudo systemctl restart fwlog`.
 
@@ -481,6 +527,7 @@ Tutto in `/etc/fwlog/fwlog.env`; dopo una modifica: `sudo systemctl restart fwlo
 | `FWLOG_TLS_CERT`, `FWLOG_TLS_KEY` | `/etc/fwlog/tls.*` | certificato; se vuoti la dashboard è in HTTP |
 | `FWLOG_RETENTION_DAYS` | `90` | conservazione predefinita in giorni, `0` = senza limite; ogni firewall può averne una propria dalla dashboard |
 | `FWLOG_WIN_RETENTION_DAYS` | `365` | conservazione predefinita degli accessi dei server Windows, `0` = senza limite; modificabile per ogni server |
+| `FWLOG_ADMIN_RETENTION_DAYS` | come `FWLOG_WIN_RETENTION_DAYS` | conservazione predefinita dei login degli amministratori ai firewall nel registro accessi; modificabile dalla dashboard |
 | `FWLOG_MIN_FREE_GB` | `2` | sotto questo spazio libero vengono eliminati i log più vecchi |
 | `FWLOG_ALLOWED_SOURCES` | vuoto | IP/subnet ammessi a inviare syslog (firewall, switch), es. `192.168.1.1,10.0.0.0/24`; vuoto = tutti. Le voci non valide vengono ignorate e segnalate nel journal e nella dashboard |
 | `FWLOG_QUEUE_MAX` | `200000` | messaggi in attesa di scrittura; oltre vengono scartati |
@@ -490,7 +537,7 @@ Per usare un certificato proprio, sostituisci `/etc/fwlog/tls.crt` e `tls.key`
 
 ---
 
-## 8. Spazio su disco
+## 9. Spazio su disco
 
 Ogni log occupa circa **400–600 byte** nel database, indici compresi (circa 470 byte
 misurati con i campioni di prova). Un disco da 100 GB contiene quindi circa
@@ -526,7 +573,7 @@ df -h /srv/fwlog
 
 ---
 
-## 9. Gestione
+## 10. Gestione
 
 ```bash
 systemctl status fwlog          # stato
@@ -568,7 +615,131 @@ Lo spazio liberato viene riutilizzato dal database; il file si riduce gradualmen
 
 ---
 
-## 10. Test con test-sender.py
+## 11. Backup e ripristino
+
+Pagina **Backup** nella barra laterale. Tutto si configura da qui: dove salvare
+(destinazioni), cosa e quando (job), il ripristino.
+
+### Destinazioni
+
+| Tipo | Uso |
+|---|---|
+| **Cartella** | disco USB o aggiuntivo, oppure NAS montato sulla VM (NFS o SMB in `/etc/fstab`), sotto `/mnt` o `/media` |
+| **S3** | AWS S3, Wasabi, Backblaze B2, MinIO, NAS con server S3 (Synology, QNAP). Endpoint, regione, bucket, cartella, chiavi; path-style per MinIO e NAS |
+| **SMB** | condivisione Windows o NAS, senza montarla (usa `smbclient`, installato da `install.sh`) |
+
+**Prova** scrive e cancella un piccolo file. Una cartella viene rifiutata se è sul disco
+di sistema o sul disco dei log: succede quando il NAS o il disco **non è montato**, così i
+backup non riempiono il disco da 15 GB.
+
+Esempio di NAS montato via NFS (come root):
+
+```bash
+mkdir -p /mnt/backup-fwlog
+echo "nas.local:/volume1/backup  /mnt/backup-fwlog  nfs  defaults,_netdev,nofail  0 0" >> /etc/fstab
+mount -a
+mkdir -p /mnt/backup-fwlog/fwlog && chown fwlog:fwlog /mnt/backup-fwlog/fwlog
+systemctl restart fwlog     # dopo aver montato un disco nuovo
+```
+
+Via SMB con mount: `//nas/backup /mnt/backup-fwlog cifs credentials=/root/.smb-nas,uid=fwlog,gid=fwlog,_netdev,nofail 0 0`
+(in `/root/.smb-nas`: `username=...` e `password=...`, permessi `0600`; serve il pacchetto
+`cifs-utils`). In alternativa la destinazione SMB non richiede alcun mount.
+
+Per S3 conviene un utente (chiave) con permessi limitati al bucket: `s3:PutObject`,
+`s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject` (quest'ultimo serve per eliminare le
+copie vecchie). Con il **versioning** o l'**Object Lock** del bucket i backup restano
+anche se qualcuno li cancella: è il modo più semplice per avere copie non modificabili.
+
+### Job
+
+Ogni job sceglie:
+
+- **cosa**: *Accessi amministratori* (il registro, pochi MB) e/o *Log dei firewall* (anche
+  molti GB). La configurazione (destinazioni, job, impostazioni, certificato TLS e
+  `fwlog.env`) è sempre inclusa;
+- **dove**: una destinazione;
+- **quando**: ogni giorno, alcuni giorni della settimana, un giorno del mese, ogni N ore
+  (dall'ora scelta) o solo a mano con **Esegui ora**. Un backup saltato a macchina spenta
+  parte al riavvio;
+- **quante copie** tenere: dopo ogni backup riuscito le più vecchie di quel job vengono
+  eliminate dalla destinazione (`0` = mai);
+- **cifratura** facoltativa (AES-256): consigliata fuori dalla rete aziendale, perché il
+  registro contiene nomi utente e indirizzi IP. **Senza la password il backup non si
+  può ripristinare.**
+
+Configurazione consigliata: un job giornaliero con i soli accessi amministratori (cifrato,
+su S3 o NAS, 30–60 copie) e, se servono, un job settimanale con i log dei firewall.
+Ogni backup del registro contiene tutta la sua storia, quindi anche una sola copia copre
+l'intera conservazione.
+
+Si esegue un'operazione alla volta. Durante la copia la ricezione dei log continua; il
+backup ha bisogno di spazio temporaneo su `/srv/fwlog` (circa quanto i dati salvati) e
+si interrompe da solo se lo spazio libero scende vicino a `FWLOG_MIN_FREE_GB`, per non
+far eliminare log dalla protezione del disco.
+
+**Esporta configurazione** scarica destinazioni e job in un file JSON (con o senza
+password e chiavi); **Importa configurazione** li ricrea su un'altra installazione.
+Conserva questo file e le password di cifratura **fuori** da fwlog.
+
+### Formato dei file
+
+`fwlog-<macchina>-<job>-<data>-<ora>.fwbk` è un database SQLite compresso con gzip (e, se
+cifrato, con `openssl enc -aes-256-cbc -pbkdf2`); accanto c'è un `.json` con il
+riepilogo (contenuto, numero di righe, periodo, impronta SHA-256). Si può leggere anche
+senza fwlog:
+
+```bash
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -in FILE.fwbk | gunzip > backup.db
+# non cifrato:  gunzip -c FILE.fwbk > backup.db
+sqlite3 backup.db "SELECT * FROM fw_admin LIMIT 10"
+```
+
+### Ripristino dalla dashboard
+
+**Ripristina…**: scegli un backup da una destinazione (oppure carica un file `.fwbk`),
+inserisci la password se è cifrato, poi cosa ripristinare:
+
+- **Accessi amministratori**: *aggiungi gli accessi mancanti* (non elimina nulla, utile per
+  recuperare accessi persi) oppure *torna esattamente al backup* (server e accessi
+  registrati dopo vengono eliminati). I token degli agenti Windows restano validi;
+- **Log dei firewall**: tutti i log attuali vengono sostituiti da quelli del backup.
+  Intanto i log in arrivo restano in coda e vengono salvati alla fine;
+- **Configurazione dei backup**: destinazioni e job aggiunti o aggiornati per nome.
+
+I dati più vecchi della conservazione impostata vengono eliminati entro un minuto: per
+consultare log vecchi, aumenta prima la conservazione.
+
+### Ricostruire la macchina da zero
+
+1. Prepara la VM e il disco dati come alle sezioni 1 e 2, scarica il repository.
+2. Copia sulla VM il backup da ripristinare (dal NAS, dal cloud o da un disco), poi:
+   ```bash
+   sudo RESTORE=/root/fwlog-fwlog01-registro-admin-20261117-023000.fwbk ./install.sh
+   ```
+   Lo script chiede la password (se cifrato), mostra il contenuto e chiede conferma.
+   Ripristina il database e, se non ci sono già, certificato TLS e `fwlog.env` della
+   macchina originale: password della dashboard invariata e **agenti Windows funzionanti
+   senza reinstallazione** (se la VM ha lo stesso indirizzo).
+3. Monta di nuovo eventuali dischi o NAS usati come destinazione e riavvia fwlog: job e
+   pianificazioni sono già al loro posto.
+
+In alternativa: installazione normale, poi dalla dashboard **Importa configurazione**
+(file JSON) e **Ripristina…** dalla destinazione. In questo caso certificato e password
+sono nuovi: gli agenti Windows vanno reinstallati con un nuovo token.
+
+Da riga di comando, a servizio fermo:
+
+```bash
+sudo systemctl stop fwlog
+sudo python3 /opt/fwlog/fwlog.py restore --info FILE.fwbk     # solo contenuto
+sudo python3 /opt/fwlog/fwlog.py restore --replace FILE.fwbk  # il database attuale viene rinominato
+sudo systemctl start fwlog
+```
+
+---
+
+## 12. Test con test-sender.py
 
 `test-sender.py` invia un esempio di log per ogni formato supportato:
 
@@ -605,7 +776,7 @@ python3 test-sender.py 127.0.0.1 -p 5514
 
 ---
 
-## 11. Limiti noti
+## 13. Limiti noti
 
 - **Ora di ricezione**, non quella del firewall: gli orologi e i formati data dei
   dispositivi sono troppo inaffidabili. Un ritardo di rete o di coda sposta di poco l'ora.
@@ -613,6 +784,14 @@ python3 test-sender.py 127.0.0.1 -p 5514
   stesso NAT risultano uno solo; un firewall che cambia IP compare come nuovo.
 - Niente syslog su TLS (porta 6514).
 - Un solo utente per la dashboard.
+- Registro accessi: i login ai firewall sono riconosciuti solo per i formati elencati
+  nella sezione 6 e solo se il firewall invia anche gli eventi di sistema.
+- Durante un backup la ricezione continua: nelle prove, a 3.000 e 8.000 msg/s costanti
+  nessun messaggio perso; con raffiche estreme (decine di migliaia di msg/s su 2 CPU) il
+  kernel può scartare parte dei pacchetti UDP (meglio TCP, o pianificare di notte).
+- Backup: completi, non incrementali. Per i log dei firewall (molti GB) conviene una
+  frequenza settimanale. Nessuna firma dei backup: l'inalterabilità va ottenuta sulla
+  destinazione (Object Lock su S3, snapshot immutabili sul NAS).
 - MikroTik non indica l'azione nel messaggio (vedi `log-prefix`); Cisco ASA registra sia
   apertura sia chiusura delle connessioni (`Built`/`Teardown`), entrambe come `allow`.
 - Server Windows: l'agente non è a prova di amministratore malintenzionato, che può

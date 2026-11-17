@@ -64,6 +64,26 @@ SAMPLES = [
     # Linux UFW
     "<4>Nov  6 10:15:12 gateway kernel: [12345.678] [UFW BLOCK] IN=ens18 OUT= MAC=00:00 "
     "SRC=94.102.61.7 DST=10.0.0.5 LEN=44 TOS=0x00 TTL=242 ID=54321 PROTO=TCP SPT=48000 DPT=8080 SYN",
+    # accessi degli amministratori ai firewall (finiscono anche nel registro accessi admin)
+    "<38>Nov  6 10:16:00 pfsense php-fpm[401]: /index.php: Successful login for user 'admin' "
+    "from: 192.168.1.50 (Local Database)",
+    "<38>Nov  6 10:16:01 pfsense php-fpm[401]: /index.php: webConfigurator authentication error "
+    "for user 'admin' from: 192.168.1.66",
+    "<38>Nov  6 10:16:02 pfsense sshd[5012]: Accepted keyboard-interactive/pam for admin from "
+    "192.168.1.50 port 51234 ssh2",
+    '<189>date=2026-11-06 time=10:16:03 devname="FGT60F" logid="0100032001" type="event" '
+    'subtype="system" level="information" vd="root" logdesc="Admin login successful" user="admin" '
+    'ui="https(192.168.10.5)" method="https" srcip=192.168.10.5 dstip=192.168.10.1 action="login" '
+    'status="success" reason="none" profile="super_admin" '
+    'msg="Administrator admin logged in successfully from https(192.168.10.5)"',
+    '<185>date=2026-11-06 time=10:16:04 devname="FGT60F" logid="0100032002" type="event" '
+    'subtype="system" level="alert" vd="root" logdesc="Admin login failed" user="admin" '
+    'ui="ssh(45.33.32.156)" method="ssh" srcip=45.33.32.156 dstip=203.0.113.2 action="login" '
+    'status="failed" reason="passwd_invalid" '
+    'msg="Administrator admin login failed from ssh(45.33.32.156) because of invalid password"',
+    "<134>Nov  6 10:16:05 mikrotik system,info,account user admin logged in from 192.168.88.10 via winbox",
+    '<166>Nov 06 2026 10:16:06: %ASA-6-605005: Login permitted from 10.1.1.5/52344 to '
+    'inside:10.1.1.1/https for user "admin"',
 ]
 
 
