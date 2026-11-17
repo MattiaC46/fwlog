@@ -11,6 +11,10 @@
 #                                     IP/subnet ammessi a inviare syslog (firewall,
 #                                     switch); solo alla prima installazione, poi
 #                                     FWLOG_ALLOWED_SOURCES in /etc/fwlog/fwlog.env
+#   sudo RESTORE=/root/fwlog-...fwbk ./install.sh
+#                                     macchina nuova da un backup: ripristina database,
+#                                     certificato TLS e fwlog.env (se non presenti)
+#                                     prima di avviare il servizio
 set -euo pipefail
 
 APP=/opt/fwlog
@@ -33,13 +37,17 @@ ALLOWED_SOURCES=$(printf '%s' "${ALLOWED_SOURCES:-}" | tr -d ' ')
 case $ALLOWED_SOURCES in *[!0-9A-Fa-f.:/,]*) die "ALLOWED_SOURCES non valida: usare IP o subnet separati da virgola" ;; esac
 [ -f "$SRC/fwlog.py" ] && [ -f "$SRC/static/index.html" ] && [ -f "$SRC/fwlog.service" ] \
     || die "eseguire dalla cartella del repository (mancano fwlog.py, static/ o fwlog.service)"
+if [ -n "${RESTORE:-}" ]; then
+    RESTORE=$(readlink -f "$RESTORE")
+    [ -f "$RESTORE" ] || die "file di backup non trovato: $RESTORE"
+fi
 
-# 1. pacchetti
-info "Installo python3 e openssl"
+# 1. pacchetti (smbclient: backup su condivisioni SMB)
+info "Installo python3, openssl e smbclient"
 if command -v apt-get >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3 openssl >/dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3 openssl smbclient >/dev/null
 elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q python3 openssl >/dev/null
+    dnf install -y -q python3 openssl samba-client >/dev/null
 else
     die "gestore pacchetti non supportato (servono apt-get o dnf)"
 fi
@@ -77,6 +85,15 @@ rm -rf "$APP/__pycache__"
 # 5. cartelle
 install -d -o fwlog -g fwlog -m 0750 "$DATA"
 install -d -o root -g fwlog -m 0750 "$ETC"
+
+# ripristino da un backup (macchina nuova): prima di generare certificato e
+# configurazione, cosi' vengono usati quelli della macchina originale
+if [ -n "${RESTORE:-}" ]; then
+    info "Ripristino da $RESTORE"
+    systemctl stop fwlog >/dev/null 2>&1 || true
+    FWLOG_DATA_DIR=$DATA FWLOG_ETC_DIR=$ETC python3 "$APP/fwlog.py" restore --replace "$RESTORE" \
+        || die "ripristino non riuscito o annullato"
+fi
 
 # 6. certificato TLS e configurazione (mai sovrascritti)
 HOST_S=$(hostname -s)
@@ -116,8 +133,11 @@ FWLOG_TLS_CERT=$ETC/tls.crt
 FWLOG_TLS_KEY=$ETC/tls.key
 # giorni di conservazione dei log, 0 = senza limite (vale comunque FWLOG_MIN_FREE_GB)
 FWLOG_RETENTION_DAYS=90
-# giorni di conservazione degli accessi admin dei server Windows (Garante privacy: almeno 180)
+# giorni di conservazione degli eventi dei server Windows diversi dagli accessi admin
 FWLOG_WIN_RETENTION_DAYS=365
+# giorni di conservazione del registro accessi admin (server e firewall; Garante privacy:
+# almeno 180), modificabili dalla dashboard
+FWLOG_ADMIN_RETENTION_DAYS=365
 # sotto questo spazio libero (GB) vengono eliminati i log piu' vecchi
 FWLOG_MIN_FREE_GB=2
 # IP o subnet ammessi a inviare log (firewall, switch), separati da virgola; vuoto = tutti
@@ -192,6 +212,12 @@ else
     warn "Indicare firewall e switch in $ENV_FILE, poi: systemctl restart fwlog"
 fi
 echo "    Server Windows: dashboard > Server Windows > Aggiungi (i server usano la porta ${PORT:-10443})."
+echo "    Backup: dashboard > Backup (destinazioni su disco o NAS montato in /mnt o /media, S3, SMB)."
+if [ -n "${RESTORE:-}" ]; then
+    echo "    Ripristinato da: $RESTORE"
+    echo "    Password della dashboard: quella della macchina originale (fwlog.env ripristinato)"
+    echo "    Montare di nuovo eventuali dischi o NAS usati come destinazione, poi: systemctl restart fwlog"
+fi
 
 if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q "^Status: active"; then
     echo

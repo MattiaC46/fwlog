@@ -18,8 +18,11 @@ Configurazione tramite variabili d'ambiente (vedi /etc/fwlog/fwlog.env).
 
 import base64
 import csv
+import datetime
+import gzip
 import hashlib
 import hmac
+import http.client
 import io
 import ipaddress
 import json
@@ -34,11 +37,16 @@ import socket
 import socketserver
 import sqlite3
 import ssl
+import subprocess
+import sys
 import threading
+import tempfile
 import time
+import xml.etree.ElementTree as ET
+import zlib
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse, urlsplit
 
 # --------------------------------------------------------------------------
 # Configurazione
@@ -82,6 +90,10 @@ QUEUE_MAX = int(E("FWLOG_QUEUE_MAX", "200000"))
 # conservazione predefinita degli accessi admin dei server Windows (il Garante
 # privacy chiede almeno 6 mesi per i log di accesso degli amministratori di sistema)
 WIN_RETENTION_DAYS = int(E("FWLOG_WIN_RETENTION_DAYS", "365"))
+# conservazione predefinita dei login degli amministratori ai firewall (registro
+# accessi admin); modificabile dalla dashboard
+ADMIN_RETENTION_DAYS = int(E("FWLOG_ADMIN_RETENTION_DAYS", str(WIN_RETENTION_DAYS)))
+ETC_DIR = E("FWLOG_ETC_DIR", "/etc/fwlog")
 INGEST_MAX = 4 * 1024 * 1024   # dimensione massima di un invio dell'agente
 WIN_MAX_EVENTS = 1000          # eventi massimi per invio
 MAX_RAW = 8192
@@ -338,12 +350,17 @@ RE_TAG_ACTION = re.compile(r"\[(?:UFW )?(BLOCK|ALLOW|DROP|ACCEPT|REJECT|AUDIT)\]
 RE_UNIFI_ACTION = re.compile(r"\[[\w\-]+-([ADR])\]")
 
 
-def p_kv(body):
+def _kv_dict(body):
     kv = {}
     for k, v in RE_KV.findall(body):
         k = k.lower()
         if k not in kv:
             kv[k] = v[1:-1] if v.startswith('"') else v
+    return kv
+
+
+def p_kv(body):
+    kv = _kv_dict(body)
     if not kv:
         return None
     r = {}
@@ -405,6 +422,144 @@ def parse_fields(body):
                 "rule": _txt(r.get("rule")),
             }
     return {}
+
+# --------------------------------------------------------------------------
+# Accessi degli amministratori ai firewall (GUI web, SSH, console)
+# --------------------------------------------------------------------------
+# Riconosciuti nei syslog e copiati nel registro accessi admin (tabella fw_admin),
+# che ha una conservazione propria: i log del firewall possono durare meno.
+# Prefiltro economico: le regole sotto vengono provate solo se c'e' una di
+# queste parole.
+RE_ADMIN_HINT = re.compile(
+    r"log(?:ged)? ?(?:in|out)|login|authenticat|Accepted |Failed |Disconnected from user|%(?:ASA|FTD)-\d-(?:60500[45]|611103)", re.I)
+_AIP = r"([0-9A-Fa-f:.]+)"
+# pfSense / OPNsense (webConfigurator)
+RE_PF_OK = re.compile(r"Successful login for user '([^']*)' from:?\s*" + _AIP)
+RE_PF_FAIL = re.compile(r"(?:webConfigurator|Web GUI) authentication error for user '([^']*)' from:?\s*" + _AIP, re.I)
+RE_PF_OUT = re.compile(r"(?:User logged out|Session timed out) for user '([^']*)' from:?\s*" + _AIP)
+# OPNsense (audit): "user root authenticated successfully for WebGui [...]"
+RE_OPN = re.compile(r"\buser (\S+) (authenticated successfully|could not authenticate) for (\w+)")
+RE_FROM_IP = re.compile(r"\bfrom:?\s*" + _AIP)
+# OpenSSH (pfSense, OPNsense, Linux, UniFi...)
+RE_SSH_OK = re.compile(r"Accepted (\S+) for (\S+) from " + _AIP + " port")
+RE_SSH_FAIL = re.compile(r"Failed (\S+) for (?:invalid user )?(\S+) from " + _AIP + " port")
+RE_SSH_OUT = re.compile(r"Disconnected from user (\S+) " + _AIP + " port")
+# MikroTik: "user admin logged in from 192.168.88.10 via winbox"
+RE_MT_ADM = re.compile(r"\buser (\S+) logged (in|out)(?: from " + _AIP + r")? via (\S+)")
+RE_MT_FAIL = re.compile(r"login failure for user (\S+)(?: from " + _AIP + r")? via (\S+)")
+# Cisco ASA / FTD
+RE_ASA_LOGIN = re.compile(r"%(?:ASA|FTD)-\d-60500[45]: Login (permitted|denied) from " + _AIP +
+                          r"/\d+ to \S+?:[0-9A-Fa-f:.]+/(\w+) for user \"([^\"]*)\"")
+RE_ASA_OUT = re.compile(r"%(?:ASA|FTD)-\d-611103: User logged out: Uname: (\S+)")
+# Palo Alto (log SYSTEM)
+RE_PAN_ADM = re.compile(r"User (\S+) logged (in|out) via (\w+) from " + _AIP)
+RE_PAN_FAIL = re.compile(r"failed authentication for user '([^']*)'\.?\s*(?:Reason: ([^.]*)\.)?.*?From: " + _AIP)
+RE_SW_ADM = re.compile(r"Administrator (login allowed|login denied|logged out)|login denied due to bad credentials", re.I)
+
+
+def _adm(kind, account, ip=None, method=None, reason=None):
+    # l'IP puo' chiudere una frase ("From: 10.0.0.1.")
+    return {"kind": kind, "account": account, "src_ip": ip.rstrip(".") if ip else None, "method": method,
+            "reason": reason}
+
+
+def _admin_kv(kv):
+    """Formati chiave=valore: FortiGate, Sophos, SonicWall."""
+    act = kv.get("action", "").lower()
+    # FortiGate: type=event subtype=system action=login|logout
+    if act in ("login", "logout") and (kv.get("subtype") == "system" or "admin" in kv.get("logdesc", "").lower()):
+        m = re.match(r"(\w+)\(([^)]*)\)", kv.get("ui", ""))
+        method = kv.get("method") or (m.group(1) if m else kv.get("ui"))
+        ip = kv.get("srcip") or (m.group(2) if m else None)
+        if act == "logout":
+            return _adm("logoff", kv.get("user"), ip, method)
+        ok = kv.get("status", "").lower() in ("success", "succeeded")
+        reason = None if ok or kv.get("reason") in (None, "", "none") else kv.get("reason")
+        return _adm("logon" if ok else "logon_fail", kv.get("user"), ip, method, reason)
+    # Sophos Firewall: log_type=Event, componente GUI/Admin/CLI/SSH
+    if kv.get("log_type", "").lower() == "event" and (
+            kv.get("log_component", "").lower() in ("gui", "admin", "cli", "ssh", "console", "api")
+            or kv.get("log_subtype", "").lower() == "admin"):
+        msg, stt = kv.get("message", "").lower(), kv.get("status", "").lower()
+        user = kv.get("user_name") or kv.get("user")
+        method = {"gui": "https", "admin": "https"}.get(kv.get("log_component", "").lower(),
+                                                         kv.get("log_component", "").lower() or None)
+        if "logged out" in msg or "logout" in msg:
+            return _adm("logoff", user, kv.get("src_ip"), method)
+        if stt.startswith("fail") or "fail" in msg:
+            return _adm("logon_fail", user, kv.get("src_ip"), method)
+        if stt.startswith("success") or "logged in" in msg:
+            return _adm("logon", user, kv.get("src_ip"), method)
+        return None
+    # SonicWall: msg="Administrator login allowed" usr="admin" src=ip:porta:iface
+    m = RE_SW_ADM.search(kv.get("msg", ""))
+    if m and (kv.get("usr") or kv.get("user")):
+        src = (kv.get("src") or "").split(":")[0]
+        what = (m.group(1) or "denied").lower()
+        kind = "logoff" if "out" in what else "logon" if "allowed" in what else "logon_fail"
+        proto = kv.get("proto", "")
+        return _adm(kind, kv.get("usr") or kv.get("user"), src, proto.split("/")[1] if "/" in proto else None)
+    return None
+
+
+def parse_admin(prog, body):
+    """Accesso di un amministratore al firewall, oppure None."""
+    if not RE_ADMIN_HINT.search(body):
+        return None
+    m = RE_PF_OK.search(body)
+    if m:
+        return _adm("logon", m.group(1), m.group(2), "https")
+    m = RE_PF_FAIL.search(body)
+    if m:
+        return _adm("logon_fail", m.group(1), m.group(2), "https")
+    m = RE_PF_OUT.search(body)
+    if m:
+        return _adm("logoff", m.group(1), m.group(2), "https")
+    m = RE_OPN.search(body)
+    if m:
+        ip = RE_FROM_IP.search(body)
+        return _adm("logon" if m.group(2).startswith("auth") else "logon_fail", m.group(1),
+                    ip.group(1) if ip else None, m.group(3).lower())
+    if (prog or "").startswith("sshd") or "sshd" in body[:120]:
+        m = RE_SSH_OK.search(body)
+        if m:
+            return _adm("logon", m.group(2), m.group(3), "ssh", m.group(1))
+        m = RE_SSH_FAIL.search(body)
+        if m:
+            return _adm("logon_fail", m.group(2), m.group(3), "ssh", m.group(1))
+        m = RE_SSH_OUT.search(body)
+        if m:
+            return _adm("logoff", m.group(1), m.group(2), "ssh")
+    m = RE_ASA_LOGIN.search(body)
+    if m:
+        return _adm("logon" if m.group(1) == "permitted" else "logon_fail", m.group(4), m.group(2), m.group(3))
+    m = RE_ASA_OUT.search(body)
+    if m:
+        return _adm("logoff", m.group(1).strip('",'))
+    m = RE_PAN_ADM.search(body)
+    if m:
+        return _adm("logon" if m.group(2) == "in" else "logoff", m.group(1), m.group(4), m.group(3).lower())
+    m = RE_PAN_FAIL.search(body)
+    if m:
+        return _adm("logon_fail", m.group(1), m.group(3), None, m.group(2))
+    m = RE_MT_FAIL.search(body)
+    if m:
+        return _adm("logon_fail", m.group(1), m.group(2), m.group(3))
+    m = RE_MT_ADM.search(body)
+    if m:
+        return _adm("logon" if m.group(2) == "in" else "logoff", m.group(1), m.group(3), m.group(4))
+    if "=" in body:
+        return _admin_kv(_kv_dict(body))
+    return None
+
+
+def admin_row(ts, fw_ip, fw_name, a, text):
+    """Riga per INSERT_ADM da un risultato di parse_admin."""
+    src = norm_ip(a["src_ip"])
+    method = (_txt(a["method"]) or "").lower() or None
+    return (ts, fw_ip, fw_name, a["kind"], "ok" if a["kind"] == "logon" else "fail" if a["kind"] == "logon_fail" else None,
+            (_txt(a["account"]) or "")[:128] or None, src, ip_key(src) if src else None, method,
+            (_txt(a["reason"]) or None), text[:2048])
 
 # --------------------------------------------------------------------------
 # Eventi Windows (accessi degli amministratori)
@@ -644,6 +799,27 @@ CREATE TABLE IF NOT EXISTS events(
 CREATE INDEX IF NOT EXISTS ix_events_srv_ts ON events(srv_id, ts);
 CREATE INDEX IF NOT EXISTS ix_events_src ON events(src_n);
 CREATE INDEX IF NOT EXISTS ix_events_account ON events(account COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS ix_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS ix_events_adm ON events(ts) WHERE kind = 'logon' AND elevated = 1;
+CREATE TABLE IF NOT EXISTS fw_admin(
+    id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, fw_ip TEXT NOT NULL, fw_name TEXT,
+    kind TEXT, outcome TEXT, account TEXT, src_ip TEXT, src_n TEXT, method TEXT, reason TEXT,
+    raw TEXT);
+CREATE INDEX IF NOT EXISTS ix_fw_admin_ts ON fw_admin(ts);
+CREATE INDEX IF NOT EXISTS ix_fw_admin_fw ON fw_admin(fw_ip, ts);
+CREATE INDEX IF NOT EXISTS ix_fw_admin_src ON fw_admin(src_n);
+CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS backup_repos(
+    id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL,
+    created INTEGER);
+CREATE TABLE IF NOT EXISTS backup_jobs(
+    id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, repo_id INTEGER, contents TEXT NOT NULL,
+    schedule TEXT NOT NULL, keep INTEGER NOT NULL DEFAULT 7, password TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1, created INTEGER, last_run INTEGER, last_status TEXT,
+    last_msg TEXT, next_run INTEGER);
+CREATE TABLE IF NOT EXISTS backup_runs(
+    id INTEGER PRIMARY KEY, job_id INTEGER, job_name TEXT, kind TEXT, started INTEGER,
+    ended INTEGER, status TEXT, msg TEXT, file TEXT, size INTEGER, repo TEXT);
 """
 INSERT = ("INSERT INTO logs(ts,fw_id,sev,host,prog,action,proto,src,src_n,sport,"
           "dst,dst_n,dport,in_if,out_if,src_zone,dst_zone,rule,raw) "
@@ -652,9 +828,26 @@ INSERT = ("INSERT INTO logs(ts,fw_id,sev,host,prog,action,proto,src,src_n,sport,
 INSERT_EV = ("INSERT OR IGNORE INTO events(ts,rx,srv_id,chan,record_id,event_id,kind,outcome,"
              "critical,elevated,account,domain,logon_type,src_ip,src_n,src_host,actor,target,"
              "reason,auth,logon_id,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+INSERT_ADM = ("INSERT INTO fw_admin(ts,fw_ip,fw_name,kind,outcome,account,src_ip,src_n,method,"
+              "reason,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+# accessi riusciti con privilegi di amministratore: gli unici eventi dei server che
+# fanno parte del registro accessi admin (conservazione e backup propri)
+ADM_EV = "kind = 'logon' AND elevated = 1"
 # (tabella, tabella proprietaria, colonna di collegamento)
 LOG_TBL = ("logs", "firewalls", "fw_id")
 EV_TBL = ("events", "servers", "srv_id")
+
+
+def get_setting(conn, k, default=None):
+    r = conn.execute("SELECT v FROM settings WHERE k=?", (k,)).fetchone()
+    return r[0] if r else default
+
+
+def admin_retention(conn):
+    """Conservazione del registro accessi admin (accessi admin ai server e login ai
+    firewall): impostata dalla dashboard o predefinita."""
+    v = get_setting(conn, "admin_retention_days")
+    return ADMIN_RETENTION_DAYS if v is None else int(v)
 
 
 class Store:
@@ -668,6 +861,7 @@ class Store:
         self._lock = threading.Lock()
         self.fw_cache = {}
         self.deleting = {}     # fw_id -> eliminazioni di log in corso
+        self.snapshot = 0      # backup in corso: niente checkpoint TRUNCATE (aspetterebbe)
         new = not os.path.exists(DB_PATH)
         c = self.connect()
         if new:
@@ -695,6 +889,13 @@ class Store:
         if readonly:
             c.execute("PRAGMA query_only=1")
         return c
+
+    def _load_fw(self, conn):
+        """Cache ip -> id dei firewall; riprende le eliminazioni interrotte."""
+        self.fw_cache = {r["ip"]: r["id"] for r in conn.execute("SELECT id, ip FROM firewalls")}
+        for ip, fid in self.fw_cache.items():
+            if ip.startswith(DELETED):
+                self.command("delete_fw", fid)
 
     # ---- ingresso (thread di rete) ----
     @staticmethod
@@ -779,11 +980,8 @@ class Store:
     # ---- thread di scrittura ----
     def _run(self):
         conn = self.connect()
-        self.fw_cache = {r["ip"]: r["id"] for r in conn.execute("SELECT id, ip FROM firewalls")}
         # eliminazioni di firewall interrotte da un riavvio: le riprende
-        for ip, fid in self.fw_cache.items():
-            if ip.startswith(DELETED):
-                self.command("delete_fw", fid)
+        self._load_fw(conn)
         # eventi di server eliminati (eliminazione interrotta da un riavvio)
         for (sid,) in conn.execute("SELECT DISTINCT srv_id FROM events "
                                    "WHERE srv_id NOT IN (SELECT id FROM servers)").fetchall():
@@ -828,8 +1026,12 @@ class Store:
         log.info("nuovo firewall: %s (%s)", ip, host or "-")
         return fid
 
+    def _fw_name(self, conn, fid):
+        r = conn.execute("SELECT name FROM firewalls WHERE id=?", (fid,)).fetchone()
+        return r[0] if r else None
+
     def _flush(self, conn, items):
-        out, count, last = [], {}, {}
+        out, count, last, adm = [], {}, {}, []
         try:
             for ts, ip, data in items:
                 text = data.decode("utf-8", "replace").replace("\ufeff", "").strip("\x00\r\n ")
@@ -846,7 +1048,16 @@ class Store:
                             dst, ip_key(dst) if dst else None, f.get("dport"),
                             f.get("in_if"), f.get("out_if"), f.get("src_zone"),
                             f.get("dst_zone"), f.get("rule"), text[:MAX_RAW]))
+                try:
+                    a = parse_admin(prog, body)
+                except Exception:
+                    a = None
+                if a and a["kind"] == "logon":
+                    # nel registro solo gli accessi riusciti; falliti e logout restano nei log
+                    adm.append(admin_row(ts, ip, self._fw_name(conn, fid), a, text))
             conn.executemany(INSERT, out)
+            if adm:
+                conn.executemany(INSERT_ADM, adm)
             for fid, n in count.items():
                 conn.execute("UPDATE firewalls SET total=total+?, last_seen=max(coalesce(last_seen,0),?) "
                              "WHERE id=?", (n, last[fid], fid))
@@ -916,10 +1127,104 @@ class Store:
         finally:
             box["ev"].set()
 
+    def _restore(self, conn, arg):
+        """Ripristino di un backup: ogni sezione scelta torna com'era nel backup
+        ("replace"); per il registro admin "merge" aggiunge solo gli eventi mancanti.
+        Gira nel thread writer: intanto i log in arrivo restano in coda."""
+        path, sections, mode, box = arg
+        out, attached = {}, False
+        try:
+            conn.commit()
+            conn.execute("ATTACH DATABASE ? AS b", (path,))
+            attached = True
+            have = {r[0] for r in conn.execute("SELECT name FROM b.sqlite_master WHERE type='table'")}
+
+            def copy(t, verb="INSERT", skip=(), tail=""):
+                if t not in have:
+                    return 0
+                bcols = {r[1] for r in conn.execute(f"PRAGMA b.table_info({t})")}
+                cols = ", ".join(r[1] for r in conn.execute(f"PRAGMA main.table_info({t})")
+                                 if r[1] in bcols and r[1] not in skip)
+                n = conn.execute(f"{verb} INTO main.{t}({cols}) SELECT {cols} FROM b.{t} {tail}").rowcount
+                out[t] = n
+                return n
+            if "firewall" in sections:
+                conn.execute("DELETE FROM logs")
+                conn.execute("DELETE FROM firewalls")
+                copy("firewalls")
+                copy("logs")
+            if "server" in sections:
+                if mode == "merge":
+                    copy("servers", "INSERT OR IGNORE")
+                    copy("events", "INSERT OR IGNORE", skip=("id",))
+                else:
+                    conn.execute("DELETE FROM main.events")
+                    conn.execute("DELETE FROM main.servers")
+                    copy("servers")
+                    copy("events")
+            if "admin" in sections:
+                # solo il registro: accessi admin ai server e login ai firewall. I server
+                # mancanti vengono aggiunti, gli altri eventi dei server non si toccano.
+                copy("servers", "INSERT OR IGNORE")
+                if mode != "merge":
+                    if "server" not in sections:
+                        conn.execute(f"DELETE FROM main.events WHERE {ADM_EV}")
+                    conn.execute("DELETE FROM main.fw_admin")
+                ev_out = out.get("events", 0)
+                copy("events", "INSERT OR IGNORE", skip=("id",), tail=f"WHERE {ADM_EV}")
+                out["events"] = out.get("events", 0) + ev_out
+                copy("fw_admin", skip=("id",), tail="AS x WHERE x.kind = 'logon' AND NOT EXISTS (SELECT 1 FROM "
+                     "main.fw_admin a WHERE a.fw_ip = x.fw_ip AND a.ts = x.ts AND coalesce(a.raw, '') = "
+                     "coalesce(x.raw, ''))")
+            if "server" in sections or "admin" in sections:
+                if "sqlite_sequence" in have:
+                    r = conn.execute("SELECT seq FROM b.sqlite_sequence WHERE name='servers'").fetchone()
+                    if r:
+                        conn.execute("UPDATE main.sqlite_sequence SET seq = max(seq, ?) WHERE name='servers'", (r[0],))
+                conn.execute("UPDATE servers SET total = (SELECT count(*) FROM events WHERE srv_id = servers.id)")
+            if "config" in sections:
+                names = {}
+                repos = []
+                if "backup_repos" in have:
+                    for r in conn.execute("SELECT * FROM b.backup_repos").fetchall():
+                        names[r["id"]] = r["name"]
+                        repos.append({"name": r["name"], "type": r["type"], "config": r["config"]})
+                jobs = []
+                if "backup_jobs" in have:
+                    jobs = [dict(dict(r), repo=names.get(r["repo_id"]))
+                            for r in conn.execute("SELECT * FROM b.backup_jobs").fetchall()]
+                out["config"] = import_config(conn, repos, jobs)
+                if "settings" in have:
+                    conn.execute("INSERT OR REPLACE INTO main.settings(k, v) SELECT k, v FROM b.settings")
+            conn.commit()
+            box["out"] = out
+        except Exception as e:
+            log.exception("ripristino fallito")
+            conn.rollback()
+            box["err"] = f"ripristino non riuscito: {e}"
+        finally:
+            if attached:
+                try:
+                    conn.execute("DETACH DATABASE b")
+                except sqlite3.Error:
+                    pass
+            if "firewall" in sections and not box["err"]:
+                with self._lock:
+                    self.deleting.clear()
+                self._load_fw(conn)
+            try:
+                conn.execute("PRAGMA incremental_vacuum").fetchall()
+                self._checkpoint(conn)
+            except sqlite3.Error:
+                pass
+            box["ev"].set()
+
     def _command(self, conn, name, arg):
         try:
             if name == "ingest":
                 self._ingest(conn, arg)
+            elif name == "restore":
+                self._restore(conn, arg)
             elif name == "delete_srv":
                 # la riga in servers e' gia' stata eliminata dal thread web (token revocato)
                 if not self._delete_step(conn, name, arg, arg, "srv_id = ?", [arg], EV_TBL):
@@ -984,22 +1289,35 @@ class Store:
             if row:
                 deleted += self._delete_where(conn, fid, "fw_id = ? AND id <= ?",
                                               [fid, row[0]], DEL_BLOCK * 10)
-        # Eventi dei server Windows: per data dell'evento (indice srv_id, ts)
+        # Eventi dei server Windows, per data dell'evento (indice srv_id, ts): gli accessi
+        # admin seguono la conservazione del registro, gli altri quella del server
+        adm_days = admin_retention(conn)
+        adm_cut = int((now - adm_days * 86400) * 1000)
         for sid, days in conn.execute("SELECT id, retention_days FROM servers").fetchall():
             days = WIN_RETENTION_DAYS if days is None else days
-            if days <= 0:
-                continue
-            cutoff = int((now - days * 86400) * 1000)
-            deleted += self._delete_where(conn, sid, "srv_id = ? AND ts < ?", [sid, cutoff],
-                                          DEL_BLOCK * 10, EV_TBL)
+            if days > 0:
+                cutoff = int((now - days * 86400) * 1000)
+                deleted += self._delete_where(conn, sid, f"srv_id = ? AND ts < ? AND NOT ({ADM_EV})",
+                                              [sid, cutoff], DEL_BLOCK * 10, EV_TBL)
+            if adm_days > 0:
+                deleted += self._delete_where(conn, sid, f"srv_id = ? AND ts < ? AND {ADM_EV}",
+                                              [sid, adm_cut], DEL_BLOCK * 10, EV_TBL)
+        # Login degli amministratori ai firewall (registro accessi admin)
+        days = adm_days
+        if days > 0:
+            deleted += conn.execute("DELETE FROM fw_admin WHERE id IN (SELECT id FROM fw_admin WHERE ts < ? "
+                                    "ORDER BY ts LIMIT ?)", (int((now - days * 86400) * 1000),
+                                                              DEL_BLOCK * 10)).rowcount
+            conn.commit()
         # Protezione disco pieno: elimina i log piu' vecchi finche' non c'e' spazio;
         # gli accessi dei server (pochi e piu' preziosi) solo quando i log sono finiti
         for _ in range(20):
             if shutil.disk_usage(DATA_DIR).free >= MIN_FREE_GB * 1024 ** 3:
                 break
-            n = self._drop_oldest(conn, 50000) or self._drop_oldest(conn, 50000, EV_TBL)
+            n = (self._drop_oldest(conn, 50000) or self._drop_events(conn, 50000, False)
+                 or self._drop_oldest_admin(conn, 50000) or self._drop_events(conn, 50000, True))
             conn.execute("PRAGMA incremental_vacuum").fetchall()
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            self._checkpoint(conn)
             deleted += n
             if n == 0:
                 break
@@ -1007,7 +1325,36 @@ class Store:
         if deleted:
             conn.execute("PRAGMA incremental_vacuum").fetchall()
             log.info("manutenzione: eliminati %d log", deleted)
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        self._checkpoint(conn)
+
+    def _checkpoint(self, conn):
+        # durante un backup il TRUNCATE aspetterebbe la fine della lettura (fino al
+        # busy_timeout) bloccando la scrittura dei log: basta un checkpoint passivo
+        mode = "PASSIVE" if self.snapshot else "TRUNCATE"
+        conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchall()
+
+    @staticmethod
+    def _drop_events(conn, n, admin):
+        """Elimina gli n eventi dei server piu' vecchi: prima quelli fuori dal registro
+        accessi admin, poi (admin=True) gli accessi admin."""
+        cond = ADM_EV if admin else f"NOT ({ADM_EV})"
+        rows = conn.execute(f"SELECT id, srv_id FROM events WHERE {cond} ORDER BY ts LIMIT ?", (n,)).fetchall()
+        if not rows:
+            return 0
+        counts = {}
+        for _, sid in rows:
+            counts[sid] = counts.get(sid, 0) + 1
+        conn.executemany("DELETE FROM events WHERE id=?", [(r[0],) for r in rows])
+        conn.executemany("UPDATE servers SET total=max(0, total-?) WHERE id=?", [(c, s) for s, c in counts.items()])
+        conn.commit()
+        return len(rows)
+
+    @staticmethod
+    def _drop_oldest_admin(conn, n):
+        d = conn.execute("DELETE FROM fw_admin WHERE id IN (SELECT id FROM fw_admin ORDER BY ts LIMIT ?)",
+                         (n,)).rowcount
+        conn.commit()
+        return d
 
 
 store = None
@@ -1079,6 +1426,12 @@ def api_firewalls():
                          (DELETED + "%",)).fetchall()
     finally:
         c.close()
+    c = store.connect(readonly=True)
+    try:
+        now = int(time.time() * 1000)
+        admin, backup = admin_summary(c, now), backup_summary(c)
+    finally:
+        c.close()
     rates = store.rates()
     du = shutil.disk_usage(DATA_DIR)
     db_size = sum(os.path.getsize(DB_PATH + s) for s in ("", "-wal") if os.path.exists(DB_PATH + s))
@@ -1092,6 +1445,7 @@ def api_firewalls():
                   "queue": store.q.qsize(),
                   "disk_free": du.free, "disk_total": du.total, "db_size": db_size,
                   "retention_days": RETENTION_DAYS},
+        "admin": admin, "backup": backup,
     }
 
 
@@ -1386,14 +1740,1487 @@ def ingest_auth(header):
         c.close()
     return r[0] if r else None
 
-# --------------------------------------------------------------------------
-# Server web
-# --------------------------------------------------------------------------
 class HttpError(Exception):
     def __init__(self, code, msg):
         super().__init__(msg)
         self.code = code
 
+
+# --------------------------------------------------------------------------
+# Registro accessi amministratori (server Windows + login ai firewall)
+# --------------------------------------------------------------------------
+ADM_SRV = ("SELECT 'srv' AS dt, e.id, e.ts, CAST(e.srv_id AS TEXT) AS dev_id, s.name AS dev_name, e.kind, "
+           "e.outcome, e.critical, e.elevated, e.account, e.domain, e.logon_type, e.auth, NULL AS method, "
+           "e.src_ip, e.src_host, e.actor, e.target, e.reason, e.event_id, e.data AS raw "
+           "FROM events e LEFT JOIN servers s ON s.id = e.srv_id")
+ADM_FW = ("SELECT 'fw' AS dt, a.id, a.ts, a.fw_ip AS dev_id, coalesce(f.name, a.fw_name, a.fw_ip) AS dev_name, "
+          "a.kind, a.outcome, 0 AS critical, 0 AS elevated, a.account, NULL AS domain, NULL AS logon_type, "
+          "NULL AS auth, a.method, a.src_ip, NULL AS src_host, NULL AS actor, NULL AS target, a.reason, "
+          "NULL AS event_id, a.raw FROM fw_admin a LEFT JOIN firewalls f ON f.ip = a.fw_ip")
+
+
+def _adm_where(p, dt):
+    """Condizioni di un ramo (server o firewall) del registro; None = ramo escluso."""
+    a = "e" if dt == "srv" else "a"
+    # solo accessi riusciti con privilegi di amministratore
+    where, args = (["e.kind = 'logon'", "e.elevated = 1"] if dt == "srv" else ["a.kind = 'logon'"]), []
+
+    def add(name, sql, xs):
+        neg = p[name].strip().startswith("!")
+        where.append(f"NOT coalesce({sql}, 0)" if neg else sql)
+        args.extend(xs)
+
+    def val(name):
+        return p[name].strip().lstrip("!").strip()
+
+    dev = p.get("dev", "")
+    if dev:
+        if dev.startswith("srv-"):
+            if dt != "srv":
+                return None
+            where.append("e.srv_id = ?"); args.append(_int(dev[4:], "dispositivo"))
+        elif dev.startswith("fw-"):
+            if dt != "fw":
+                return None
+            where.append("a.fw_ip = ?"); args.append(dev[3:])
+        else:
+            raise ValueError("dispositivo non valido")
+    if p.get("from"):
+        where.append(f"{a}.ts >= ?"); args.append(_int(p["from"], "da"))
+    if p.get("to"):
+        where.append(f"{a}.ts <= ?"); args.append(_int(p["to"], "a"))
+    if p.get("bts") and p.get("bdt") and p.get("bid"):
+        # pagina successiva: ordinamento (ts, dt, id) decrescente
+        bts, bid, bdt = _int(p["bts"], "bts"), _int(p["bid"], "bid"), p["bdt"]
+        if dt < bdt:
+            where.append(f"{a}.ts <= ?"); args.append(bts)
+        elif dt > bdt:
+            where.append(f"{a}.ts < ?"); args.append(bts)
+        else:
+            where.append(f"({a}.ts < ? OR ({a}.ts = ? AND {a}.id < ?))"); args.extend([bts, bts, bid])
+    if p.get("ip") and val("ip"):
+        sql, xs = ip_condition((f"{a}.src_n",), val("ip"))
+        add("ip", sql, xs)
+    if p.get("user") and val("user"):
+        add("user", f"({a}.account = ? COLLATE NOCASE)", [_split_acct(val("user"))[0] or val("user")])
+    for name in ("kind", "outcome"):
+        if p.get(name) and val(name):
+            add(name, f"({a}.{name} = ?)", [val(name)])
+    if p.get("q") and val("q"):
+        q = val("q").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        text = ("coalesce(e.account,'')||' '||coalesce(e.src_host,'')||' '||coalesce(e.actor,'')||' '||"
+                "coalesce(e.target,'')||' '||coalesce(e.reason,'')||' '||coalesce(e.data,'')") if dt == "srv" else \
+               ("coalesce(a.account,'')||' '||coalesce(a.method,'')||' '||coalesce(a.reason,'')||' '||"
+                "coalesce(a.raw,'')")
+        add("q", f"({text} LIKE ? ESCAPE '\\')", [f"%{q}%"])
+    return where, args
+
+
+def admin_query(p, limit):
+    parts, args = [], []
+    for dt, base in (("srv", ADM_SRV), ("fw", ADM_FW)):
+        w = _adm_where(p, dt)
+        if w is None:
+            continue
+        where, a = w
+        al = "e" if dt == "srv" else "a"
+        parts.append(f"SELECT * FROM ({base}{' WHERE ' + ' AND '.join(where) if where else ''} "
+                     f"ORDER BY {al}.ts DESC, {al}.id DESC LIMIT {int(limit)})")
+        args += a
+    return (" UNION ALL ".join(parts) + f" ORDER BY ts DESC, dt DESC, id DESC LIMIT {int(limit)}"), args
+
+
+def api_admin(p):
+    limit = max(1, min(_int(p.get("limit", 200), "limit"), 1000))
+    sql, args = admin_query(p, limit)
+    c = store.connect(readonly=True)
+    try:
+        rows = c.execute(sql, args).fetchall()
+    finally:
+        c.close()
+    return {"rows": [dict(r) for r in rows], "more": len(rows) == limit}
+
+
+def api_admin_csv(p):
+    sql, args = admin_query(p, 100000)
+    cols = ["ts", "dispositivo", "tipo", "kind", "outcome", "critical", "account", "domain", "logon_type",
+            "auth", "method", "src_ip", "src_host", "actor", "target", "reason", "event_id", "raw"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(cols)
+    c = store.connect(readonly=True)
+    try:
+        for r in c.execute(sql, args):
+            row = [time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"] / 1000)), r["dev_name"],
+                   "server" if r["dt"] == "srv" else "firewall"] + [r[k] for k in cols[3:]]
+            w.writerow([("'" + v) if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+                        for v in row])
+    finally:
+        c.close()
+    return buf.getvalue()
+
+
+def api_admin_facets():
+    c = store.connect(readonly=True)
+    try:
+        srv = [{"id": f"srv-{r[0]}", "name": r[1]} for r in
+               c.execute("SELECT id, name FROM servers ORDER BY name COLLATE NOCASE")]
+        fws = {r[0]: r[1] for r in c.execute("SELECT ip, name FROM firewalls WHERE ip NOT LIKE ?", (DELETED + "%",))}
+        for ip, name in c.execute("SELECT fw_ip, max(fw_name) FROM fw_admin GROUP BY fw_ip"):
+            fws.setdefault(ip, name or ip)
+        users = set()
+        for (u,) in c.execute("SELECT account FROM (SELECT account FROM events ORDER BY ts DESC LIMIT 5000) "
+                              "UNION SELECT account FROM (SELECT account FROM fw_admin ORDER BY ts DESC LIMIT 5000)"):
+            if u:
+                users.add(u)
+    finally:
+        c.close()
+    fw = sorted(({"id": f"fw-{ip}", "name": n, "ip": ip} for ip, n in fws.items()), key=lambda x: x["name"].lower())
+    return {"servers": srv, "firewalls": fw, "user": sorted(users, key=str.lower)[:300]}
+
+
+def admin_summary(c, now):
+    day = now - 86400000
+    n24 = c.execute(f"SELECT (SELECT count(*) FROM events WHERE ts >= ? AND {ADM_EV}) + "
+                    "(SELECT count(*) FROM fw_admin WHERE ts >= ? AND kind = 'logon')", (day, day)).fetchone()[0]
+    v = get_setting(c, "admin_retention_days")
+    return {"logon_24h": n24, "retention_days": admin_retention(c),
+            "retention_set": None if v is None else int(v), "retention_default": ADMIN_RETENTION_DAYS,
+            "win_retention_days": WIN_RETENTION_DAYS}
+
+
+def api_admin_settings(d):
+    if "retention_days" not in d:
+        raise ValueError("niente da modificare")
+    v = _retention(d["retention_days"])
+    c = store.connect()
+    try:
+        if v is None:
+            c.execute("DELETE FROM settings WHERE k='admin_retention_days'")
+        else:
+            c.execute("INSERT OR REPLACE INTO settings(k, v) VALUES('admin_retention_days', ?)", (str(v),))
+        c.commit()
+    finally:
+        c.close()
+    return {"ok": True}
+
+# --------------------------------------------------------------------------
+# Backup e ripristino
+# --------------------------------------------------------------------------
+# Un backup e' un database SQLite con le sole tabelle scelte (piu' _meta e _files),
+# compresso con gzip ed eventualmente cifrato con openssl (AES-256-CBC, PBKDF2):
+#   openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -in X.fwbk | gunzip > X.db
+# Accanto a ogni backup c'e' un .json con il riepilogo (manifest).
+BK_TMP = os.path.join(DATA_DIR, "backup-tmp")
+RESTORE_DIR = os.path.join(DATA_DIR, "restore")
+BK_EXT = ".fwbk"
+BK_FORMAT = 1
+PBKDF2_ITER = "200000"
+GB = 1024 ** 3
+SECTIONS = {
+    "admin": ("servers", "events", "fw_admin"),     # events: solo gli accessi admin (ADM_EV)
+    "server": ("servers", "events"),                # tutti gli eventi dei server
+    "firewall": ("firewalls", "logs"),
+    "config": ("backup_repos", "backup_jobs", "settings"),
+}
+SECRETS = {"s3": ("secret_key",), "smb": ("password",)}
+SMB_ERRORS = {
+    "NT_STATUS_LOGON_FAILURE": "utente o password errati",
+    "NT_STATUS_BAD_NETWORK_NAME": "condivisione inesistente",
+    "NT_STATUS_ACCESS_DENIED": "accesso negato (permessi della condivisione o della cartella)",
+    "NT_STATUS_OBJECT_NAME_NOT_FOUND": "file o cartella inesistente",
+    "NT_STATUS_OBJECT_PATH_NOT_FOUND": "cartella inesistente",
+    "NT_STATUS_HOST_UNREACHABLE": "server non raggiungibile",
+    "NT_STATUS_IO_TIMEOUT": "server non raggiungibile (timeout)",
+    "NT_STATUS_CONNECTION_REFUSED": "connessione rifiutata (porta 445 chiusa?)",
+    "NT_STATUS_DISK_FULL": "spazio esaurito sulla condivisione",
+    "NT_STATUS_UNSUCCESSFUL": "connessione non riuscita (nome del server?)",
+    "NT_STATUS_OBJECT_NAME_COLLISION": "esiste gia' un file con lo stesso nome",
+    "NT_STATUS_NO_SUCH_FILE": "file inesistente",
+}
+
+
+class BackupError(Exception):
+    pass
+
+
+def host_name():
+    return re.sub(r"[^A-Za-z0-9-]+", "-", socket.gethostname().split(".")[0]).strip("-").lower() or "fwlog"
+
+
+def slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "backup"
+
+
+def _reserve():
+    """Spazio da lasciare sempre libero sul disco dati durante backup e ripristini
+    (sotto MIN_FREE_GB la manutenzione eliminerebbe i log)."""
+    return int(MIN_FREE_GB * GB) + 512 * 1024 ** 2
+
+
+def need_space(need, what):
+    free = shutil.disk_usage(DATA_DIR).free
+    if free - need < _reserve():
+        raise BackupError(f"spazio insufficiente su {DATA_DIR} per {what}: servono circa "
+                          f"{need / GB:.1f} GB oltre ai {_reserve() / GB:.1f} GB di riserva, liberi "
+                          f"{free / GB:.1f} GB")
+
+
+def space_guard():
+    if shutil.disk_usage(DATA_DIR).free < _reserve():
+        raise BackupError("spazio su disco quasi esaurito: operazione interrotta per non far eliminare i log")
+
+
+def _ms_iso(ms):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ms / 1000))
+
+
+# ---- destinazioni ----
+class LocalRepo:
+    """Cartella locale: disco USB/aggiuntivo o NAS montato (NFS, CIFS) in fstab."""
+
+    def __init__(self, cfg):
+        self.path = cfg["path"]
+
+    def where(self):
+        return self.path
+
+    def _check(self):
+        if not os.path.isdir(self.path):
+            raise BackupError(f"la cartella {self.path} non esiste o non e' raggiungibile (disco o NAS montato?)")
+        st = os.stat(self.path)
+        if st.st_dev == os.stat("/").st_dev:
+            raise BackupError(f"{self.path} e' sul disco di sistema: il disco o il NAS non risulta montato")
+        if st.st_dev == os.stat(DATA_DIR).st_dev:
+            raise BackupError(f"{self.path} e' sullo stesso disco dei log: un backup qui non protegge da un guasto")
+        if not os.access(self.path, os.W_OK):
+            raise BackupError(f"l'utente fwlog non puo' scrivere in {self.path} (permessi o opzioni di mount)")
+
+    def list(self):
+        self._check()
+        out = []
+        for e in os.scandir(self.path):
+            if e.is_file() and e.name.startswith("fwlog-"):
+                st = e.stat()
+                out.append({"name": e.name, "size": st.st_size, "mtime": int(st.st_mtime * 1000)})
+        return out
+
+    def put(self, local, name):
+        self._check()
+        dst = os.path.join(self.path, name)
+        with open(local, "rb") as f, open(dst + ".part", "wb") as g:
+            shutil.copyfileobj(f, g, 4 * 1024 * 1024)
+            g.flush()
+            os.fsync(g.fileno())
+        os.replace(dst + ".part", dst)
+
+    def get(self, name, local):
+        shutil.copyfile(os.path.join(self.path, name), local)
+
+    def delete(self, name):
+        try:
+            os.remove(os.path.join(self.path, name))
+        except FileNotFoundError:
+            pass
+
+    def test(self):
+        self._check()
+        n = os.path.join(self.path, f".fwlog-test-{secrets.token_hex(4)}")
+        with open(n, "wb") as f:
+            f.write(b"ok")
+        os.remove(n)
+        du = shutil.disk_usage(self.path)
+        return f"scrittura riuscita, spazio libero {du.free / GB:.1f} GB"
+
+
+def s3_signature(method, canon_uri, canon_query, headers, payload_hash, access, secret, region, amz_date):
+    """Firma AWS Signature V4 per S3. headers: dict con chiavi minuscole (tutte firmate).
+    Restituisce il valore dell'header Authorization."""
+    signed = sorted(headers)
+    canon_headers = "".join(f"{k}:{' '.join(str(headers[k]).split())}\n" for k in signed)
+    creq = "\n".join([method, canon_uri, canon_query, canon_headers, ";".join(signed), payload_hash])
+    scope = f"{amz_date[:8]}/{region}/s3/aws4_request"
+    sts = "\n".join(["AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(creq.encode()).hexdigest()])
+    k = ("AWS4" + secret).encode()
+    for part in (amz_date[:8], region, "s3", "aws4_request"):
+        k = hmac.new(k, part.encode(), hashlib.sha256).digest()
+    sig = hmac.new(k, sts.encode(), hashlib.sha256).hexdigest()
+    return f"AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={';'.join(signed)}, Signature={sig}"
+
+
+class S3Repo:
+    """S3 o compatibile (AWS, Wasabi, Backblaze B2, MinIO, NAS con S3)."""
+    PART = 16 * 1024 * 1024   # oltre: caricamento multipart a blocchi da 16 MB
+    EMPTY = hashlib.sha256(b"").hexdigest()
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        u = urlsplit(cfg["endpoint"])
+        self.https = u.scheme == "https"
+        self.host, self.port = u.hostname, u.port
+        self.bucket, self.prefix = cfg["bucket"], cfg.get("prefix") or ""
+        self.region = cfg.get("region") or "us-east-1"
+
+    def where(self):
+        return f"{self.cfg['endpoint']} · {self.bucket}/{self.prefix}"
+
+    def _request(self, method, key=None, query=None, body=b"", out=None, extra=None):
+        query = query or {}
+        if self.cfg.get("path_style", True):
+            host, path = self.host, "/" + self.bucket + ("/" + key if key is not None else "")
+        else:
+            host, path = f"{self.bucket}.{self.host}", "/" + (key or "")
+        host_hdr = host if self.port is None else f"{host}:{self.port}"
+        uri = quote(path, safe="/-_.~")
+        cq = "&".join(f"{quote(k, safe='-_.~')}={quote(str(v), safe='-_.~')}" for k, v in sorted(query.items()))
+        amz_date = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        ph = hashlib.sha256(body).hexdigest() if body else self.EMPTY
+        hdrs = {"host": host_hdr, "x-amz-content-sha256": ph, "x-amz-date": amz_date}
+        hdrs.update(extra or {})
+        hdrs["authorization"] = s3_signature(method, uri, cq, {k: v for k, v in hdrs.items()}, ph,
+                                             self.cfg["access_key"], self.cfg["secret_key"], self.region, amz_date)
+        if self.https:
+            ctx = ssl.create_default_context()
+            if not self.cfg.get("verify_tls", True):
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            conn = http.client.HTTPSConnection(host, self.port, context=ctx, timeout=300)
+        else:
+            conn = http.client.HTTPConnection(host, self.port, timeout=300)
+        try:
+            try:
+                conn.request(method, uri + ("?" + cq if cq else ""), body=body or None, headers=hdrs)
+                resp = conn.getresponse()
+            except ssl.SSLCertVerificationError as e:
+                raise BackupError(f"S3: certificato non valido ({e.verify_message}); per un certificato "
+                                  "autofirmato disattiva la verifica")
+            except OSError as e:
+                raise BackupError(f"S3: {host_hdr} non raggiungibile ({e})")
+            if resp.status >= 300:
+                data = resp.read()
+                code = msg = ""
+                try:
+                    root = ET.fromstring(data)
+                    code, msg = root.findtext("Code") or "", root.findtext("Message") or ""
+                except ET.ParseError:
+                    pass
+                hint = {"NoSuchBucket": "bucket inesistente", "AccessDenied": "accesso negato",
+                        "InvalidAccessKeyId": "access key non valida",
+                        "SignatureDoesNotMatch": "secret key errata (o regione sbagliata)",
+                        "AuthorizationHeaderMalformed": "regione sbagliata",
+                        "PermanentRedirect": "regione o endpoint sbagliato"}.get(code, "")
+                raise BackupError(f"S3: {resp.status} {code} {hint or msg}".strip())
+            if out is not None:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                return resp, b""
+            return resp, resp.read()
+        finally:
+            conn.close()
+
+    def list(self):
+        out, token = [], None
+        while True:
+            q = {"list-type": "2", "prefix": self.prefix + "fwlog-"}
+            if token:
+                q["continuation-token"] = token
+            _, data = self._request("GET", None, q)
+            root = ET.fromstring(data)
+            for el_ in root.iter():
+                el_.tag = el_.tag.split("}")[-1]
+            for c in root.findall("Contents"):
+                name = (c.findtext("Key") or "")[len(self.prefix):]
+                if not name or "/" in name:
+                    continue
+                lm = c.findtext("LastModified") or ""
+                try:
+                    mt = int(datetime.datetime.strptime(lm[:19], "%Y-%m-%dT%H:%M:%S")
+                             .replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
+                except ValueError:
+                    mt = None
+                out.append({"name": name, "size": int(c.findtext("Size") or 0), "mtime": mt})
+            if root.findtext("IsTruncated") != "true":
+                return out
+            token = root.findtext("NextContinuationToken")
+
+    def put(self, local, name):
+        key = self.prefix + name
+        size = os.path.getsize(local)
+        if size <= self.PART:
+            with open(local, "rb") as f:
+                self._request("PUT", key, body=f.read())
+            return
+        _, data = self._request("POST", key, {"uploads": ""})
+        root = ET.fromstring(data)
+        upload_id = next((e.text for e in root.iter() if e.tag.endswith("UploadId")), None)
+        if not upload_id:
+            raise BackupError("S3: avvio del caricamento multipart non riuscito")
+        parts = []
+        try:
+            with open(local, "rb") as f:
+                n = 0
+                while True:
+                    chunk = f.read(self.PART)
+                    if not chunk:
+                        break
+                    n += 1
+                    resp, _ = self._request("PUT", key, {"partNumber": str(n), "uploadId": upload_id}, body=chunk)
+                    parts.append((n, resp.getheader("ETag")))
+            xml = "<CompleteMultipartUpload>" + "".join(
+                f"<Part><PartNumber>{n}</PartNumber><ETag>{etag}</ETag></Part>" for n, etag in parts
+            ) + "</CompleteMultipartUpload>"
+            _, data = self._request("POST", key, {"uploadId": upload_id}, body=xml.encode())
+            if b"<Error>" in data:   # S3 puo' rispondere 200 con un errore nel corpo
+                raise BackupError("S3: completamento del caricamento non riuscito")
+        except Exception:
+            try:
+                self._request("DELETE", key, {"uploadId": upload_id})
+            except Exception:
+                pass
+            raise
+
+    def get(self, name, local):
+        with open(local, "wb") as f:
+            self._request("GET", self.prefix + name, out=f)
+
+    def delete(self, name):
+        self._request("DELETE", self.prefix + name)
+
+    def test(self):
+        name = f".fwlog-test-{secrets.token_hex(4)}"
+        self._request("PUT", self.prefix + name, body=b"ok")
+        self._request("DELETE", self.prefix + name)
+        n = len(self.list())
+        return f"scrittura riuscita, {n} file di backup presenti"
+
+
+class SmbRepo:
+    """Condivisione SMB (Windows, NAS) tramite smbclient, senza montarla."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.folder = cfg.get("folder") or ""
+
+    def where(self):
+        return f"//{self.cfg['server']}/{self.cfg['share']}/{self.folder}".rstrip("/")
+
+    def _run(self, cmds, timeout=None, ok_status=()):
+        exe = shutil.which("smbclient")
+        if not exe:
+            raise BackupError("smbclient non installato: rieseguire install.sh (pacchetto samba-client "
+                              "su Rocky, smbclient su Ubuntu)")
+        args = [exe, f"//{self.cfg['server']}/{self.cfg['share']}"]
+        auth = None
+        if self.cfg.get("user"):
+            fd, auth = tempfile.mkstemp(prefix="fwlog-smb-")
+            with os.fdopen(fd, "w") as f:
+                f.write(f"username = {self.cfg['user']}\npassword = {self.cfg.get('password', '')}\n")
+                if self.cfg.get("domain"):
+                    f.write(f"domain = {self.cfg['domain']}\n")
+            args += ["-A", auth]
+        else:
+            args.append("-N")
+        env = dict(os.environ, LC_ALL="C", HOME=tempfile.gettempdir())
+        try:
+            r = subprocess.run(args + ["-c", cmds], capture_output=True, text=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            raise BackupError("SMB: il server non risponde")
+        finally:
+            if auth:
+                os.remove(auth)
+        text = r.stdout + "\n" + r.stderr
+        bad = [m for m in re.findall(r"NT_STATUS_\w+", text) if m not in ok_status]
+        if bad or (r.returncode != 0 and not re.findall(r"NT_STATUS_\w+", text)):
+            if bad:
+                raise BackupError(f"SMB: {SMB_ERRORS.get(bad[0], bad[0])}")
+            raise BackupError("SMB: " + (r.stderr.strip().splitlines() or ["errore di smbclient"])[-1][:200])
+        return r.stdout
+
+    def _p(self, name):
+        # percorsi completi in ogni comando: con "cd" seguito da altri comandi, un cd
+        # fallito farebbe scrivere nella radice della condivisione
+        return f"{self.folder}/{name}" if self.folder else name
+
+    def _mkdirs(self):
+        path = ""
+        for part in [x for x in self.folder.split("/") if x]:
+            path = f"{path}/{part}" if path else part
+            self._run(f'mkdir "{path}"', 120, ok_status=("NT_STATUS_OBJECT_NAME_COLLISION",))
+
+    def list(self):
+        out = []
+        text = self._run(f'ls "{self._p("fwlog-*")}"', 120, ok_status=("NT_STATUS_NO_SUCH_FILE",))
+        for line in text.splitlines():
+            m = re.match(r"^  (\S+)\s+[A-Z]*\s+(\d+)\s+(\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4})$", line)
+            if m and m.group(1).startswith("fwlog-"):
+                try:
+                    mt = int(time.mktime(time.strptime(m.group(3), "%a %b %d %H:%M:%S %Y")) * 1000)
+                except ValueError:
+                    mt = None
+                out.append({"name": m.group(1), "size": int(m.group(2)), "mtime": mt})
+        return out
+
+    def put(self, local, name):
+        self._mkdirs()
+        part, dst = self._p(name + ".part"), self._p(name)
+        try:
+            self._run(f'put "{local}" "{part}"; rename "{part}" "{dst}"')
+        except BackupError:
+            try:
+                self._run(f'del "{part}"', 120, ok_status=("NT_STATUS_NO_SUCH_FILE", "NT_STATUS_OBJECT_NAME_NOT_FOUND"))
+            except BackupError:
+                pass
+            raise
+
+    def get(self, name, local):
+        self._run(f'get "{self._p(name)}" "{local}"')
+
+    def delete(self, name):
+        self._run(f'del "{self._p(name)}"', 120, ok_status=("NT_STATUS_NO_SUCH_FILE",
+                                                          "NT_STATUS_OBJECT_NAME_NOT_FOUND"))
+
+    def test(self):
+        self._mkdirs()
+        fd, tmp = tempfile.mkstemp(prefix="fwlog-test-")
+        os.write(fd, b"ok")
+        os.close(fd)
+        name = self._p(f".fwlog-test-{secrets.token_hex(4)}")
+        try:
+            self._run(f'put "{tmp}" "{name}"; del "{name}"', 120)
+        finally:
+            os.remove(tmp)
+        return f"scrittura riuscita, {len(self.list())} file di backup presenti"
+
+
+REPO_TYPES = {"local": LocalRepo, "s3": S3Repo, "smb": SmbRepo}
+
+
+def make_repo(rtype, cfg):
+    return REPO_TYPES[rtype](cfg)
+
+
+def _str(d, k, maxlen=200, required=False, what=None):
+    v = d.get(k)
+    v = "" if v is None else str(v).strip()
+    if "\n" in v or "\r" in v or len(v) > maxlen:
+        raise ValueError(f"{what or k}: valore non valido")
+    if required and not v:
+        raise ValueError(f"indica {what or k}")
+    return v
+
+
+def clean_repo(d, old_cfg=None):
+    """Valida nome, tipo e parametri di una destinazione; i segreti vuoti restano invariati."""
+    name = _str(d, "name", 80, True, "il nome della destinazione")
+    rtype = d.get("type")
+    if rtype not in REPO_TYPES:
+        raise ValueError("tipo di destinazione non valido")
+    c = d.get("config") or {}
+    if not isinstance(c, dict):
+        raise ValueError("configurazione non valida")
+    old = old_cfg or {}
+    if rtype == "local":
+        path = _str(c, "path", 400, True, "la cartella")
+        if not path.startswith("/") or "/../" in path + "/" or '"' in path:
+            raise ValueError("la cartella deve essere un percorso assoluto, es. /mnt/nas-backup")
+        cfg = {"path": os.path.normpath(path)}
+    elif rtype == "s3":
+        region = _str(c, "region", 40) or "us-east-1"
+        endpoint = _str(c, "endpoint", 300).rstrip("/") or f"https://s3.{region}.amazonaws.com"
+        u = urlsplit(endpoint)
+        if u.scheme not in ("http", "https") or not u.hostname or u.path not in ("", "/"):
+            raise ValueError("endpoint non valido, es. https://s3.eu-south-1.amazonaws.com")
+        bucket = _str(c, "bucket", 63, True, "il bucket")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.\-_]{1,62}", bucket):
+            raise ValueError("nome del bucket non valido")
+        prefix = _str(c, "prefix", 200).strip("/")
+        if prefix and not re.fullmatch(r"[A-Za-z0-9!\-_.*'()/ ]+", prefix):
+            raise ValueError("cartella (prefisso) non valida")
+        cfg = {"endpoint": endpoint, "region": region, "bucket": bucket, "prefix": prefix + "/" if prefix else "",
+               "access_key": _str(c, "access_key", 200, True, "l'access key"),
+               "secret_key": _str(c, "secret_key", 200) or old.get("secret_key", ""),
+               "path_style": c.get("path_style") is not False, "verify_tls": c.get("verify_tls") is not False}
+        if not cfg["secret_key"]:
+            raise ValueError("indica la secret key")
+    else:
+        server = _str(c, "server", 200, True, "il server")
+        if not re.fullmatch(r"[A-Za-z0-9.\-_:\[\]]+", server):
+            raise ValueError("nome o indirizzo del server non valido")
+        share = _str(c, "share", 80, True, "la condivisione")
+        folder = _str(c, "folder", 200).replace("\\", "/").strip("/")
+        user = _str(c, "user", 100)
+        domain = _str(c, "domain", 100)
+        if "\\" in user and not domain:     # DOMINIO\utente
+            domain, user = user.split("\\", 1)
+        for v, what in ((share, "condivisione"), (user, "utente"), (domain, "dominio")):
+            if re.search(r'["\x00-\x1f;/\\]', v):
+                raise ValueError(f"{what}: caratteri non ammessi")
+        if re.search(r'["\x00-\x1f;]|(^|/)\.\.(/|$)', folder):
+            raise ValueError("cartella: caratteri non ammessi")
+        cfg = {"server": server, "share": share, "folder": folder, "user": user, "domain": domain,
+               "password": _str(c, "password", 200) or (old.get("password", "") if user == old.get("user") else "")}
+    return name, rtype, cfg
+
+
+def public_repo(r):
+    cfg = json.loads(r["config"])
+    out = {"id": r["id"], "name": r["name"], "type": r["type"], "config": dict(cfg)}
+    for k in SECRETS.get(r["type"], ()):
+        out["config"][k] = ""
+        out["config"]["has_" + k] = bool(cfg.get(k))
+    try:
+        out["where"] = make_repo(r["type"], cfg).where()
+    except Exception:
+        out["where"] = ""
+    return out
+
+
+# ---- pianificazione ----
+WEEKDAYS = ("lun", "mar", "mer", "gio", "ven", "sab", "dom")
+
+
+def clean_schedule(s):
+    if not isinstance(s, dict):
+        raise ValueError("pianificazione non valida")
+    freq = s.get("freq")
+    if freq not in ("daily", "weekly", "monthly", "hours", "manual"):
+        raise ValueError("frequenza non valida")
+    out = {"freq": freq}
+    t = str(s.get("time") or "02:00")
+    m = re.fullmatch(r"(\d{1,2}):(\d\d)", t)
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise ValueError("ora non valida (formato HH:MM)")
+    out["time"] = f"{int(m.group(1)):02d}:{m.group(2)}"
+    if freq == "weekly":
+        days = sorted({int(x) for x in s.get("days") or [] if str(x).isdigit() and 1 <= int(x) <= 7})
+        if not days:
+            raise ValueError("scegli almeno un giorno della settimana")
+        out["days"] = days
+    if freq == "monthly":
+        out["mday"] = _int(s.get("mday", 1), "giorno del mese")
+        if not 1 <= out["mday"] <= 28:
+            raise ValueError("il giorno del mese deve essere tra 1 e 28")
+    if freq == "hours":
+        out["every"] = _int(s.get("every", 6), "ore")
+        if not 1 <= out["every"] <= 24:
+            raise ValueError("l'intervallo deve essere tra 1 e 24 ore")
+    return out
+
+
+def next_run(s, now_ms):
+    """Prossima esecuzione (ms) dopo now_ms secondo la pianificazione, ora locale."""
+    freq = s.get("freq")
+    if freq == "manual":
+        return None
+    now = datetime.datetime.fromtimestamp(now_ms / 1000)
+    hh, mm = (int(x) for x in s.get("time", "02:00").split(":"))
+    day0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if freq == "hours":
+        # orari fissi ogni giorno: dall'ora scelta, ogni N ore (es. 02:30, 08:30, 14:30, 20:30)
+        every = s.get("every", 6) * 60
+        start = hh * 60 + mm
+        mins = sorted({(start + k * every) % 1440 for k in range(-(-1440 // every))})
+        for add in (0, 1):
+            for m in mins:
+                t = day0 + datetime.timedelta(days=add, minutes=m)
+                if t > now:
+                    return int(t.timestamp() * 1000)
+        return None
+    for add in range(0, 400):
+        d = day0 + datetime.timedelta(days=add)
+        if freq == "weekly" and d.isoweekday() not in s.get("days", []):
+            continue
+        if freq == "monthly" and d.day != s.get("mday", 1):
+            continue
+        t = d.replace(hour=hh, minute=mm)
+        if t > now:
+            return int(t.timestamp() * 1000)
+    return None
+
+
+def clean_job(d, conn, old=None):
+    name = _str(d, "name", 80, True, "il nome del job")
+    try:
+        repo_id = int(d.get("repo_id"))
+    except (TypeError, ValueError):
+        raise ValueError("scegli la destinazione")
+    if not conn.execute("SELECT 1 FROM backup_repos WHERE id=?", (repo_id,)).fetchone():
+        raise ValueError("destinazione inesistente")
+    contents = d.get("contents")
+    if not isinstance(contents, list) or not contents or any(x not in ("admin", "server", "firewall") for x in contents):
+        raise ValueError("scegli cosa salvare: accessi amministratori, log dei server e/o log dei firewall")
+    keep = _int(d.get("keep", 7), "copie da conservare")
+    if not 0 <= keep <= 10000:
+        raise ValueError("copie da conservare: da 0 (tutte) a 10000")
+    if d.get("encrypt") is False:
+        password = None
+    else:
+        password = _str(d, "password", 200) or (old["password"] if old else None)
+        if d.get("encrypt") and not password:
+            raise ValueError("indica la password di cifratura")
+        if password is not None and len(password) < 8:
+            raise ValueError("la password di cifratura deve avere almeno 8 caratteri")
+    return {"name": name, "repo_id": repo_id, "contents": json.dumps(sorted(set(contents))),
+            "schedule": json.dumps(clean_schedule(d.get("schedule") or {})), "keep": keep,
+            "password": password, "enabled": 0 if d.get("enabled") is False else 1}
+
+
+def public_job(r):
+    j = dict(r)
+    j["encrypted"] = bool(j.pop("password"))
+    j["contents"] = json.loads(j["contents"])
+    j["schedule"] = json.loads(j["schedule"])
+    return j
+
+
+def import_config(conn, repos, jobs):
+    """Aggiunge o aggiorna per nome destinazioni e job (configurazione esportata o
+    contenuta in un backup). repos: [{name, type, config}], jobs: [{..., repo: nome}]."""
+    nr = nj = 0
+    ids = {}
+    for r in repos:
+        cfg = r.get("config")
+        if isinstance(cfg, str):
+            cfg = json.loads(cfg)
+        old = conn.execute("SELECT id, type, config FROM backup_repos WHERE name=?", (r.get("name"),)).fetchone()
+        old_cfg = json.loads(old["config"]) if old and old["type"] == r.get("type") else None
+        name, rtype, cfg = clean_repo({"name": r.get("name"), "type": r.get("type"), "config": cfg}, old_cfg)
+        if old:
+            conn.execute("UPDATE backup_repos SET type=?, config=? WHERE id=?", (rtype, json.dumps(cfg), old["id"]))
+            ids[name] = old["id"]
+        else:
+            ids[name] = conn.execute("INSERT INTO backup_repos(name, type, config, created) VALUES(?,?,?,?)",
+                                     (name, rtype, json.dumps(cfg), int(time.time() * 1000))).lastrowid
+        nr += 1
+    for j in jobs:
+        repo = j.get("repo")
+        rid = ids.get(repo)
+        if rid is None:
+            row = conn.execute("SELECT id FROM backup_repos WHERE name=?", (repo,)).fetchone()
+            rid = row[0] if row else None
+        old = conn.execute("SELECT * FROM backup_jobs WHERE name=?", (j.get("name"),)).fetchone()
+        sched = j.get("schedule")
+        contents = j.get("contents")
+        d = dict(j, repo_id=rid, schedule=json.loads(sched) if isinstance(sched, str) else sched,
+                 contents=json.loads(contents) if isinstance(contents, str) else contents,
+                 enabled=bool(j.get("enabled", True)))
+        d["encrypt"] = bool(j.get("password")) or None
+        v = clean_job(d, conn, old)
+        nxt = next_run(json.loads(v["schedule"]), int(time.time() * 1000)) if v["enabled"] else None
+        if old:
+            conn.execute("UPDATE backup_jobs SET repo_id=?, contents=?, schedule=?, keep=?, password=?, enabled=?, "
+                         "next_run=? WHERE id=?", (v["repo_id"], v["contents"], v["schedule"], v["keep"],
+                                                   v["password"], v["enabled"], nxt, old["id"]))
+        else:
+            conn.execute("INSERT INTO backup_jobs(name, repo_id, contents, schedule, keep, password, enabled, "
+                         "created, next_run) VALUES(?,?,?,?,?,?,?,?,?)",
+                         (v["name"], v["repo_id"], v["contents"], v["schedule"], v["keep"], v["password"],
+                          v["enabled"], int(time.time() * 1000), nxt))
+        nj += 1
+    return {"repos": nr, "jobs": nj}
+
+
+def export_config(conn, with_secrets=True):
+    repos, names = [], {}
+    for r in conn.execute("SELECT * FROM backup_repos ORDER BY name"):
+        cfg = json.loads(r["config"])
+        if not with_secrets:
+            for k in SECRETS.get(r["type"], ()):
+                cfg.pop(k, None)
+        repos.append({"name": r["name"], "type": r["type"], "config": cfg})
+        names[r["id"]] = r["name"]
+    jobs = []
+    for r in conn.execute("SELECT * FROM backup_jobs ORDER BY name"):
+        j = {"name": r["name"], "repo": names.get(r["repo_id"]), "contents": json.loads(r["contents"]),
+             "schedule": json.loads(r["schedule"]), "keep": r["keep"], "enabled": bool(r["enabled"])}
+        if with_secrets and r["password"]:
+            j["password"] = r["password"]
+        jobs.append(j)
+    return {"fwlog": "backup-config", "version": 1, "exported": _ms_iso(time.time() * 1000),
+            "host": host_name(), "secrets": with_secrets, "repos": repos, "jobs": jobs}
+
+
+# ---- creazione, compressione e cifratura ----
+def make_snapshot(dst, contents, label):
+    """Copia coerente (una sola transazione di lettura) delle tabelle scelte in un
+    nuovo database `dst`, che e' a sua volta un database fwlog valido."""
+    tables = list(SECTIONS["config"])
+    for c in contents:
+        tables += [t for t in SECTIONS[c] if t not in tables]
+    # con i soli accessi admin, degli eventi dei server si salvano solo quelli del registro
+    where = {"events": ADM_EV} if "admin" in contents and "server" not in contents else {}
+    where["fw_admin"] = "kind = 'logon'"
+    for sfx in ("", "-journal"):
+        if os.path.exists(dst + sfx):
+            os.remove(dst + sfx)
+    c = sqlite3.connect(dst, isolation_level=None, timeout=30)
+    try:
+        c.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        c.execute("PRAGMA journal_mode=OFF")
+        c.execute("PRAGMA synchronous=OFF")
+        c.execute("ATTACH DATABASE ? AS src", (DB_PATH,))
+        c.execute("PRAGMA src.busy_timeout=30000")
+        n = [0]
+
+        def progress():
+            n[0] += 1
+            try:
+                space_guard()
+            except BackupError:
+                return 1
+            return 0
+        c.set_progress_handler(progress, 500000)
+        c.execute("BEGIN")
+        counts, ranges = {}, {}
+        for t in tables:
+            row = c.execute("SELECT sql FROM src.sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()
+            if not row:
+                continue
+            c.execute(row[0])
+            w = f" WHERE {where[t]}" if t in where else ""
+            counts[t] = c.execute(f"INSERT INTO main.{t} SELECT * FROM src.{t}{w}").rowcount
+        for t in ("events", "fw_admin", "logs"):
+            if t in counts and counts[t]:
+                w = f" WHERE {where[t]}" if t in where else ""
+                ranges[t] = list(c.execute(f"SELECT min(ts), max(ts) FROM src.{t}{w}").fetchone())
+        seq = c.execute("SELECT seq FROM src.sqlite_sequence WHERE name='servers'").fetchone() \
+            if "servers" in counts else None
+        if seq:
+            c.execute("UPDATE main.sqlite_sequence SET seq=? WHERE name='servers'", seq)
+        c.execute("CREATE TABLE _files(name TEXT PRIMARY KEY, data BLOB)")
+        for name, path in (("tls.crt", TLS_CERT), ("tls.key", TLS_KEY), ("fwlog.env", os.path.join(ETC_DIR, "fwlog.env"))):
+            try:
+                with open(path, "rb") as f:
+                    c.execute("INSERT INTO _files VALUES(?,?)", (name, f.read()))
+            except (OSError, TypeError):
+                pass
+        meta = {"format": BK_FORMAT, "app": "fwlog", "created": int(time.time() * 1000), "host": host_name(),
+                "job": label, "contents": sorted(set(contents) | {"config"}), "counts": counts,
+                "ranges": ranges, "tls_pin": TLS_PIN}
+        c.execute("CREATE TABLE _meta(k TEXT PRIMARY KEY, v TEXT)")
+        c.execute("INSERT INTO _meta VALUES('meta', ?)", (json.dumps(meta),))
+        c.execute("COMMIT")
+    except sqlite3.OperationalError as e:
+        if "interrupt" in str(e):
+            raise BackupError("spazio su disco quasi esaurito: backup interrotto per non far eliminare i log")
+        raise
+    finally:
+        c.close()
+    return meta
+
+
+def _openssl(password, src=None):
+    """openssl enc: cifra da stdin, oppure (src) decifra il file. La password passa
+    da una pipe, non dalla riga di comando."""
+    if not shutil.which("openssl"):
+        raise BackupError("openssl non installato")
+    r, w = os.pipe()
+    os.write(w, password.encode() + b"\n")
+    os.close(w)
+    args = ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-iter", PBKDF2_ITER, "-md", "sha256",
+            "-pass", f"fd:{r}"]
+    args += ["-d", "-in", src] if src else ["-salt"]
+    try:
+        return subprocess.Popen(args, stdin=None if src else subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(r,))
+    finally:
+        os.close(r)
+
+
+class _HashOut:
+    def __init__(self, f):
+        self.f, self.h, self.size = f, hashlib.sha256(), 0
+
+    def write(self, b):
+        self.f.write(b)
+        self.h.update(b)
+        self.size += len(b)
+        return len(b)
+
+    def flush(self):
+        self.f.flush()
+
+
+def pack(src, dst, password=None, guard=True):
+    """gzip di `src` (+ AES-256 con openssl se c'e' una password) in `dst`.
+    Restituisce (dimensione, sha256)."""
+    with open(dst, "wb") as raw:
+        out = _HashOut(raw)
+        proc = pump = None
+        if password:
+            proc = _openssl(password)
+
+            def _pump():
+                while True:
+                    b = proc.stdout.read(1024 * 1024)
+                    if not b:
+                        break
+                    out.write(b)
+            pump = threading.Thread(target=_pump, daemon=True)
+            pump.start()
+            sink = proc.stdin
+        else:
+            sink = out
+        try:
+            with open(src, "rb") as f, gzip.GzipFile(filename="fwlog.db", mode="wb", fileobj=sink,
+                                                     compresslevel=6, mtime=0) as gz:
+                n = 0
+                while True:
+                    b = f.read(1024 * 1024)
+                    if not b:
+                        break
+                    gz.write(b)
+                    n += 1
+                    if guard and n % 64 == 0:
+                        space_guard()
+        finally:
+            if proc:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+                pump.join()
+                rc = proc.wait()
+                if rc:
+                    raise BackupError("cifratura non riuscita: " + proc.stderr.read().decode(errors="replace")[:200])
+    return out.size, out.h.hexdigest()
+
+
+def is_encrypted(path):
+    with open(path, "rb") as f:
+        head = f.read(8)
+    if head == b"Salted__":
+        return True
+    if head[:2] == b"\x1f\x8b":
+        return False
+    raise BackupError("il file non e' un backup di fwlog")
+
+
+def unpack(src, dst, password=None, guard=True):
+    """Decifra e decomprime un backup in `dst` (database SQLite); restituisce il riepilogo."""
+    enc = is_encrypted(src)
+    if enc and not password:
+        raise BackupError("il backup e' cifrato: serve la password")
+    proc = _openssl(password, src) if enc else None
+    fin = proc.stdout if proc else open(src, "rb")
+    ok = False
+    try:
+        with gzip.GzipFile(fileobj=fin, mode="rb") as gz, open(dst, "wb") as f:
+            n = 0
+            while True:
+                b = gz.read(1024 * 1024)
+                if not b:
+                    break
+                f.write(b)
+                n += 1
+                if guard and n % 64 == 0:
+                    space_guard()
+        ok = True
+    except (OSError, EOFError, zlib.error):
+        raise BackupError("password errata o file danneggiato" if enc else "file danneggiato o incompleto")
+    finally:
+        fin.close()
+        if proc and proc.wait() and ok:
+            ok = False
+            raise BackupError("password errata o file danneggiato")
+        if not ok and os.path.exists(dst):
+            os.remove(dst)
+    return backup_meta(dst)
+
+
+def backup_meta(db):
+    """Riepilogo di un backup decompresso; errore se non e' un backup fwlog."""
+    try:
+        c = sqlite3.connect(f"file:{quote(db)}?mode=ro", uri=True)
+        try:
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            meta = json.loads(c.execute("SELECT v FROM _meta WHERE k='meta'").fetchone()[0])
+            files = [r[0] for r in c.execute("SELECT name FROM _files")] if "_files" in tables else []
+        finally:
+            c.close()
+    except (sqlite3.DatabaseError, TypeError, ValueError):
+        raise BackupError("il file non e' un backup di fwlog valido")
+    if meta.get("app") != "fwlog":
+        raise BackupError("il file non e' un backup di fwlog")
+    if meta.get("format", 0) > BK_FORMAT:
+        raise BackupError("backup creato da una versione piu' recente di fwlog: aggiornare prima fwlog")
+    meta["tables"] = sorted(tables)
+    meta["files"] = files
+    meta["db_size"] = os.path.getsize(db)
+    return meta
+
+
+# ---- esecuzione (un'operazione alla volta) ----
+class Backups:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.task = None        # operazione in corso: {kind, label, phase, started}
+        self.stage = {}         # ripristino in preparazione: {src, origin, db, meta, encrypted}
+        self.last = None        # esito dell'ultima operazione avviata dalla dashboard
+
+    def busy(self):
+        return self.task is not None
+
+    def start(self, kind, label, fn, *args):
+        with self.lock:
+            if self.task:
+                raise HttpError(409, f"operazione in corso: {self.task['label']}")
+            self.task = {"kind": kind, "label": label, "phase": "avvio", "started": int(time.time() * 1000)}
+
+        def run():
+            try:
+                # priorita' bassa (vale per questo thread e per openssl/smbclient che avvia):
+                # la ricezione dei log non deve rallentare durante un backup
+                os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 15)
+            except (OSError, AttributeError):
+                pass
+            try:
+                fn(*args)
+                self.last = {"kind": kind, "label": label, "ok": True, "at": int(time.time() * 1000)}
+            except Exception as e:
+                if not isinstance(e, (BackupError, ValueError)):
+                    log.exception("%s fallito", label)
+                self.last = {"kind": kind, "label": label, "ok": False, "msg": str(e) or e.__class__.__name__,
+                             "at": int(time.time() * 1000)}
+            finally:
+                self.task = None
+        threading.Thread(target=run, name="backup", daemon=True).start()
+
+    def phase(self, text):
+        if self.task:
+            self.task["phase"] = text
+
+    # ---- job di backup ----
+    def run_job(self, job_id):
+        c = store.connect()
+        started = int(time.time() * 1000)
+        try:
+            job = c.execute("SELECT * FROM backup_jobs WHERE id=?", (job_id,)).fetchone()
+            if not job:
+                raise BackupError("job inesistente")
+            repo_row = c.execute("SELECT * FROM backup_repos WHERE id=?", (job["repo_id"],)).fetchone()
+            run_id = c.execute("INSERT INTO backup_runs(job_id, job_name, kind, started, status, repo) "
+                               "VALUES(?,?,?,?,?,?)", (job_id, job["name"], "backup", started, "running",
+                                                       repo_row["name"] if repo_row else None)).lastrowid
+            c.commit()
+        finally:
+            c.close()
+        name = f"fwlog-{host_name()}-{slug(job['name'])}-{time.strftime('%Y%m%d-%H%M%S')}{BK_EXT}"
+        tmp_db, tmp_out = os.path.join(BK_TMP, name + ".db"), os.path.join(BK_TMP, name)
+        status, msg, size = "error", None, None
+        try:
+            if not repo_row:
+                raise BackupError("la destinazione del job non esiste piu'")
+            repo = make_repo(repo_row["type"], json.loads(repo_row["config"]))
+            contents = json.loads(job["contents"])
+            os.makedirs(BK_TMP, exist_ok=True)
+            db_size = sum(os.path.getsize(DB_PATH + s) for s in ("", "-wal") if os.path.exists(DB_PATH + s))
+            # stima: copia delle tabelle (senza indici) + file compresso
+            est = db_size if "firewall" in contents else min(db_size, 256 * 1024 ** 2 + db_size // 4)
+            need_space(int(est * 1.3), "il backup")
+            self.phase("copia dei dati")
+            store.snapshot += 1
+            try:
+                meta = make_snapshot(tmp_db, contents, job["name"])
+            finally:
+                store.snapshot -= 1
+            self.phase("compressione e cifratura" if job["password"] else "compressione")
+            size, sha = pack(tmp_db, tmp_out, job["password"])
+            meta.update(file=name, size=size, sha256=sha, encrypted=bool(job["password"]),
+                        db_size=os.path.getsize(tmp_db))
+            os.remove(tmp_db)
+            self.phase(f"invio a «{repo_row['name']}»")
+            repo.put(tmp_out, name)
+            mf = os.path.join(BK_TMP, name[:-len(BK_EXT)] + ".json")
+            with open(mf, "w") as f:
+                json.dump(meta, f, indent=1)
+            try:
+                repo.put(mf, os.path.basename(mf))
+            finally:
+                os.remove(mf)
+            if job["keep"]:
+                self.phase("eliminazione delle copie vecchie")
+                prefix = f"fwlog-{host_name()}-{slug(job['name'])}-"
+                old = sorted((f["name"] for f in repo.list()
+                              if f["name"].startswith(prefix) and f["name"].endswith(BK_EXT)), reverse=True)
+                for n in old[job["keep"]:]:
+                    repo.delete(n)
+                    repo.delete(n[:-len(BK_EXT)] + ".json")
+            status, msg = "ok", name
+            log.info("backup %s completato: %s (%d byte)", job["name"], name, size)
+        except Exception as e:
+            msg = str(e) or e.__class__.__name__
+            if not isinstance(e, BackupError):
+                log.exception("backup %s fallito", job["name"])
+            else:
+                log.error("backup %s fallito: %s", job["name"], msg)
+        finally:
+            for p in (tmp_db, tmp_out):
+                if os.path.exists(p):
+                    os.remove(p)
+        now = int(time.time() * 1000)
+        c = store.connect()
+        try:
+            c.execute("UPDATE backup_runs SET ended=?, status=?, msg=?, file=?, size=? WHERE id=?",
+                      (now, status, msg, name if status == "ok" else None, size, run_id))
+            c.execute("UPDATE backup_jobs SET last_run=?, last_status=?, last_msg=? WHERE id=?",
+                      (now, status, msg, job_id))
+            c.execute("DELETE FROM backup_runs WHERE id NOT IN (SELECT id FROM backup_runs ORDER BY id DESC LIMIT 500)")
+            c.commit()
+        finally:
+            c.close()
+        if status != "ok":
+            raise BackupError(msg)
+
+    def scheduler(self):
+        """Avvia i job pianificati (uno alla volta); un job saltato a macchina spenta
+        parte al riavvio."""
+        time.sleep(20)
+        while True:
+            try:
+                if not self.task:
+                    now = int(time.time() * 1000)
+                    c = store.connect()
+                    try:
+                        due = c.execute("SELECT id, name, schedule FROM backup_jobs WHERE enabled=1 AND "
+                                        "next_run IS NOT NULL AND next_run <= ? ORDER BY next_run LIMIT 1",
+                                        (now,)).fetchone()
+                        if due:
+                            c.execute("UPDATE backup_jobs SET next_run=? WHERE id=?",
+                                      (next_run(json.loads(due["schedule"]), now + 60000), due["id"]))
+                            c.commit()
+                    finally:
+                        c.close()
+                    if due:
+                        try:
+                            self.start("backup", f"backup «{due['name']}»", self.run_job, due["id"])
+                        except HttpError:
+                            pass
+            except Exception:
+                log.exception("errore nella pianificazione dei backup")
+            time.sleep(15)
+
+    # ---- ripristino ----
+    def clear_stage(self):
+        for k in ("src", "db"):
+            p = self.stage.get(k)
+            if p and os.path.exists(p):
+                os.remove(p)
+        self.stage = {}
+
+    def prepare(self, repo_id, name, password):
+        """Scarica (se serve), decifra e decomprime il backup da ripristinare."""
+        if repo_id is not None:
+            self.clear_stage()
+            c = store.connect(readonly=True)
+            try:
+                r = c.execute("SELECT * FROM backup_repos WHERE id=?", (repo_id,)).fetchone()
+            finally:
+                c.close()
+            if not r:
+                raise BackupError("destinazione inesistente")
+            repo = make_repo(r["type"], json.loads(r["config"]))
+            files = {f["name"]: f for f in repo.list()}
+            if name not in files:
+                raise BackupError("backup non trovato nella destinazione")
+            need_space(files[name]["size"] * 6, "scaricare e decomprimere il backup")
+            os.makedirs(RESTORE_DIR, exist_ok=True)
+            src = os.path.join(RESTORE_DIR, "download" + BK_EXT)
+            self.phase(f"download da «{r['name']}»")
+            repo.get(name, src)
+            self.stage = {"src": src, "origin": f"{name} da «{r['name']}»"}
+        if not self.stage.get("src"):
+            raise BackupError("nessun backup da ripristinare: caricalo o sceglilo da una destinazione")
+        if self.stage.get("db") and os.path.exists(self.stage["db"]):
+            os.remove(self.stage["db"])
+        self.stage.pop("meta", None)
+        db = os.path.join(RESTORE_DIR, "restore.db")
+        need_space(os.path.getsize(self.stage["src"]) * 5, "decomprimere il backup")
+        self.stage["encrypted"] = is_encrypted(self.stage["src"])
+        self.phase("decifratura e decompressione" if self.stage["encrypted"] else "decompressione")
+        self.stage["meta"] = unpack(self.stage["src"], db, password)
+        self.stage["db"] = db
+
+    def restore(self, sections, mode):
+        meta = self.stage.get("meta")
+        if not meta:
+            raise BackupError("prepara prima il backup da ripristinare")
+        c = store.connect(readonly=True)
+        try:
+            if "firewall" in sections and c.execute("SELECT 1 FROM firewalls WHERE ip LIKE ?",
+                                                    (DELETED + "%",)).fetchone():
+                raise BackupError("eliminazione di un firewall in corso: riprova tra qualche minuto")
+            if "admin" in sections and c.execute("SELECT 1 FROM events WHERE srv_id NOT IN "
+                                                 "(SELECT id FROM servers) LIMIT 1").fetchone():
+                raise BackupError("eliminazione di un server in corso: riprova tra qualche minuto")
+        finally:
+            c.close()
+        need_space(int(meta["db_size"] * 1.5), "il ripristino")
+        self.phase("ripristino nel database (la ricezione dei log riprende alla fine)")
+        box = {"ev": threading.Event(), "err": None, "out": None}
+        store.command("restore", (self.stage["db"], sections, mode, box))
+        box["ev"].wait()
+        started = self.task["started"] if self.task else int(time.time() * 1000)
+        c = store.connect()
+        try:
+            c.execute("INSERT INTO backup_runs(job_name, kind, started, ended, status, msg, file) VALUES(?,?,?,?,?,?,?)",
+                      ("ripristino", "restore", started, int(time.time() * 1000), "error" if box["err"] else "ok",
+                       box["err"] or ", ".join(sections), meta.get("file") or self.stage.get("origin")))
+            c.commit()
+        finally:
+            c.close()
+        if box["err"]:
+            raise BackupError(box["err"])
+        log.info("ripristino completato (%s) da %s", ", ".join(sections), self.stage.get("origin"))
+        self.clear_stage()
+
+
+bk = Backups()
+
+
+def api_backup():
+    c = store.connect(readonly=True)
+    try:
+        repos = [public_repo(r) for r in c.execute("SELECT * FROM backup_repos ORDER BY name COLLATE NOCASE")]
+        jobs = [public_job(r) for r in c.execute("SELECT * FROM backup_jobs ORDER BY name COLLATE NOCASE")]
+        runs = [dict(r) for r in c.execute("SELECT * FROM backup_runs ORDER BY id DESC LIMIT 30")]
+    finally:
+        c.close()
+    st_ = bk.stage
+    stage = None
+    if st_.get("src"):
+        stage = {"origin": st_.get("origin"), "encrypted": st_.get("encrypted"), "meta": st_.get("meta"),
+                 "size": os.path.getsize(st_["src"]) if os.path.exists(st_["src"]) else None}
+    du = shutil.disk_usage(DATA_DIR)
+    return {"now": int(time.time() * 1000), "host": host_name(), "repos": repos, "jobs": jobs, "runs": runs,
+            "task": bk.task, "last": bk.last, "stage": stage, "pin": TLS_PIN, "disk_free": du.free,
+            "reserve": _reserve(), "smbclient": bool(shutil.which("smbclient"))}
+
+
+def backup_summary(c):
+    rows = c.execute("SELECT name, enabled, last_status, last_run, contents FROM backup_jobs").fetchall()
+    return {"jobs": len(rows), "enabled": sum(1 for r in rows if r["enabled"]),
+            "admin_covered": any(r["enabled"] and "admin" in json.loads(r["contents"]) for r in rows),
+            "failed": [r["name"] for r in rows if r["enabled"] and r["last_status"] == "error"],
+            "last_ok": max((r["last_run"] for r in rows if r["last_status"] == "ok"), default=None),
+            "running": bk.task["label"] if bk.task else None}
+
+
+def _repo_row(c, rid):
+    r = c.execute("SELECT * FROM backup_repos WHERE id=?", (rid,)).fetchone()
+    if not r:
+        raise HttpError(404, "destinazione non trovata")
+    return r
+
+
+def api_repo_save(rid, d):
+    c = store.connect()
+    try:
+        old = _repo_row(c, rid) if rid else None
+        old_cfg = json.loads(old["config"]) if old and old["type"] == d.get("type") else None
+        name, rtype, cfg = clean_repo(d, old_cfg)
+        try:
+            if old:
+                c.execute("UPDATE backup_repos SET name=?, type=?, config=? WHERE id=?",
+                          (name, rtype, json.dumps(cfg), rid))
+            else:
+                rid = c.execute("INSERT INTO backup_repos(name, type, config, created) VALUES(?,?,?,?)",
+                                (name, rtype, json.dumps(cfg), int(time.time() * 1000))).lastrowid
+            c.commit()
+        except sqlite3.IntegrityError:
+            raise ValueError("esiste gia' una destinazione con questo nome")
+    finally:
+        c.close()
+    return {"ok": True, "id": rid}
+
+
+def api_repo_test(d):
+    """Prova una destinazione (anche non ancora salvata: i segreti vuoti si prendono
+    da quella salvata con lo stesso id)."""
+    old_cfg = None
+    if d.get("id"):
+        c = store.connect(readonly=True)
+        try:
+            r = _repo_row(c, _int(d["id"], "id"))
+        finally:
+            c.close()
+        if r["type"] == d.get("type"):
+            old_cfg = json.loads(r["config"])
+    _, rtype, cfg = clean_repo(dict(d, name=d.get("name") or "prova"), old_cfg)
+    try:
+        return {"ok": True, "msg": make_repo(rtype, cfg).test()}
+    except BackupError as e:
+        return {"ok": False, "msg": str(e)}
+
+
+def api_repo_delete(rid):
+    c = store.connect()
+    try:
+        _repo_row(c, rid)
+        used = [r[0] for r in c.execute("SELECT name FROM backup_jobs WHERE repo_id=?", (rid,))]
+        if used:
+            raise ValueError("destinazione usata dai job: " + ", ".join(used))
+        c.execute("DELETE FROM backup_repos WHERE id=?", (rid,))
+        c.commit()
+    finally:
+        c.close()
+    return {"ok": True}
+
+
+def api_repo_files(rid):
+    c = store.connect(readonly=True)
+    try:
+        r = _repo_row(c, rid)
+    finally:
+        c.close()
+    repo = make_repo(r["type"], json.loads(r["config"]))
+    try:
+        files = repo.list()
+    except BackupError as e:
+        raise HttpError(502, str(e))
+    names = {f["name"] for f in files}
+    out = sorted((f for f in files if f["name"].endswith(BK_EXT)), key=lambda f: f["name"], reverse=True)[:200]
+    # riepiloghi (manifest) dei 40 backup piu' recenti
+    os.makedirs(BK_TMP, exist_ok=True)
+    for f in out[:40]:
+        mf = f["name"][:-len(BK_EXT)] + ".json"
+        if mf not in names:
+            continue
+        tmp = os.path.join(BK_TMP, "manifest-" + secrets.token_hex(4))
+        try:
+            repo.get(mf, tmp)
+            with open(tmp) as fh:
+                m = json.load(fh)
+            f["meta"] = {k: m.get(k) for k in ("created", "host", "job", "contents", "counts", "ranges",
+                                               "encrypted", "sha256")}
+        except Exception:
+            pass
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    return {"files": out}
+
+
+def api_job_save(jid, d):
+    c = store.connect()
+    try:
+        old = c.execute("SELECT * FROM backup_jobs WHERE id=?", (jid,)).fetchone() if jid else None
+        if jid and not old:
+            raise HttpError(404, "job non trovato")
+        v = clean_job(d, c, old)
+        nxt = next_run(json.loads(v["schedule"]), int(time.time() * 1000)) if v["enabled"] else None
+        try:
+            if old:
+                c.execute("UPDATE backup_jobs SET name=?, repo_id=?, contents=?, schedule=?, keep=?, password=?, "
+                          "enabled=?, next_run=? WHERE id=?", (v["name"], v["repo_id"], v["contents"], v["schedule"],
+                                                               v["keep"], v["password"], v["enabled"], nxt, jid))
+            else:
+                jid = c.execute("INSERT INTO backup_jobs(name, repo_id, contents, schedule, keep, password, enabled, "
+                                "created, next_run) VALUES(?,?,?,?,?,?,?,?,?)",
+                                (v["name"], v["repo_id"], v["contents"], v["schedule"], v["keep"], v["password"],
+                                 v["enabled"], int(time.time() * 1000), nxt)).lastrowid
+            c.commit()
+        except sqlite3.IntegrityError:
+            raise ValueError("esiste gia' un job con questo nome")
+    finally:
+        c.close()
+    return {"ok": True, "id": jid}
+
+
+def api_job_delete(jid):
+    c = store.connect()
+    try:
+        n = c.execute("DELETE FROM backup_jobs WHERE id=?", (jid,)).rowcount
+        c.commit()
+    finally:
+        c.close()
+    if not n:
+        raise HttpError(404, "job non trovato")
+    return {"ok": True}
+
+
+def api_job_run(jid):
+    c = store.connect(readonly=True)
+    try:
+        j = c.execute("SELECT name FROM backup_jobs WHERE id=?", (jid,)).fetchone()
+    finally:
+        c.close()
+    if not j:
+        raise HttpError(404, "job non trovato")
+    bk.start("backup", f"backup «{j['name']}»", bk.run_job, jid)
+    return {"ok": True}
+
+
+def api_config_import(d):
+    if d.get("fwlog") != "backup-config":
+        raise ValueError("il file non e' una configurazione dei backup di fwlog")
+    repos, jobs = d.get("repos") or [], d.get("jobs") or []
+    if not isinstance(repos, list) or not isinstance(jobs, list):
+        raise ValueError("configurazione non valida")
+    c = store.connect()
+    try:
+        out = import_config(c, repos, jobs)
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+    return dict(out, ok=True)
+
+
+def api_restore_prepare(d):
+    password = d.get("password") or None
+    if password is not None and (not isinstance(password, str) or "\n" in password):
+        raise ValueError("password non valida")
+    if d.get("repo_id") is not None:
+        rid = _int(d["repo_id"], "destinazione")
+        name = str(d.get("name") or "")
+        if not re.fullmatch(r"fwlog-[A-Za-z0-9.\-_]+" + re.escape(BK_EXT), name):
+            raise ValueError("nome del backup non valido")
+        bk.start("restore", "preparazione del ripristino", bk.prepare, rid, name, password)
+    else:
+        if not bk.stage.get("src"):
+            raise ValueError("nessun file caricato")
+        bk.start("restore", "preparazione del ripristino", bk.prepare, None, None, password)
+    return {"ok": True}
+
+
+def api_restore_run(d):
+    sections = d.get("sections")
+    meta = (bk.stage or {}).get("meta")
+    if not meta:
+        raise ValueError("prepara prima il backup da ripristinare")
+    if not isinstance(sections, list) or not sections or any(s not in meta["contents"] for s in sections):
+        raise ValueError("scegli cosa ripristinare tra i contenuti del backup")
+    mode = d.get("admin_mode", "replace")
+    if mode not in ("replace", "merge"):
+        raise ValueError("modalita' non valida")
+    bk.start("restore", "ripristino", bk.restore, sorted(set(sections)), mode)
+    return {"ok": True}
+
+
+def api_restore_cancel():
+    if bk.busy():
+        raise HttpError(409, "operazione in corso")
+    bk.clear_stage()
+    return {"ok": True}
+
+
+def cleanup_backup_dirs():
+    """All'avvio: file temporanei di backup e ripristini interrotti."""
+    for d in (BK_TMP, RESTORE_DIR):
+        if os.path.isdir(d):
+            for e in os.scandir(d):
+                if e.is_file():
+                    os.remove(e.path)
+
+# --------------------------------------------------------------------------
+# Server web
+# --------------------------------------------------------------------------
 
 class Web(BaseHTTPRequestHandler):
     server_version = "fwlog"
@@ -1444,7 +3271,7 @@ class Web(BaseHTTPRequestHandler):
             fn()
         except HttpError as e:
             self._send(e.code, {"error": str(e)})
-        except ValueError as e:
+        except (ValueError, BackupError) as e:
             self._send(400, {"error": str(e)})
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -1459,7 +3286,50 @@ class Web(BaseHTTPRequestHandler):
         if urlparse(self.path).path == "/api/ingest":
             # agente Windows: si autentica con il proprio token, non con la password
             return self._handle(self._ingest, auth=False)
+        if urlparse(self.path).path == "/api/restore/upload":
+            return self._handle(self._upload)
         self._handle(self._post)
+
+    def _upload(self):
+        """Backup da ripristinare caricato dal browser (corpo binario, scritto a blocchi)."""
+        if self.headers.get("Content-Type") != "application/octet-stream":
+            self.close_connection = True
+            raise ValueError("Content-Type deve essere application/octet-stream")
+        try:
+            n = int(self.headers.get("Content-Length") or -1)
+        except ValueError:
+            n = -1
+        if n <= 0:
+            self.close_connection = True
+            raise ValueError("file vuoto o dimensione mancante")
+        try:
+            if bk.busy():
+                raise HttpError(409, f"operazione in corso: {bk.task['label']}")
+            need_space(n * 6, "caricare e decomprimere il backup")
+        except Exception:
+            self.close_connection = True
+            raise
+        bk.clear_stage()
+        os.makedirs(RESTORE_DIR, exist_ok=True)
+        dst = os.path.join(RESTORE_DIR, "upload" + BK_EXT)
+        left = n
+        try:
+            with open(dst, "wb") as f:
+                while left > 0:
+                    b = self.rfile.read(min(left, 1024 * 1024))
+                    if not b:
+                        raise ValueError("caricamento interrotto")
+                    f.write(b)
+                    left -= len(b)
+            enc = is_encrypted(dst)
+        except Exception:
+            self.close_connection = True
+            if os.path.exists(dst):
+                os.remove(dst)
+            raise
+        name = os.path.basename(parse_qs(urlparse(self.path).query).get("name", ["file"])[-1])[:120]
+        bk.stage = {"src": dst, "origin": f"{name} (caricato)", "encrypted": enc}
+        self._send(200, {"ok": True, "encrypted": enc, "size": n})
 
     def do_DELETE(self):
         self._handle(self._delete)
@@ -1492,6 +3362,27 @@ class Web(BaseHTTPRequestHandler):
                        {"Content-Disposition": f'attachment; filename="{name}"'})
         elif u.path == "/api/events/facets":
             self._send(200, api_events_facets(p))
+        elif u.path == "/api/admin":
+            self._send(200, api_admin(p))
+        elif u.path == "/api/admin.csv":
+            name = time.strftime("fwlog-registro-admin-%Y%m%d-%H%M%S.csv")
+            self._send(200, api_admin_csv(p), "text/csv; charset=utf-8",
+                       {"Content-Disposition": f'attachment; filename="{name}"'})
+        elif u.path == "/api/admin/facets":
+            self._send(200, api_admin_facets())
+        elif u.path == "/api/backup":
+            self._send(200, api_backup())
+        elif u.path == "/api/backup/config":
+            c = store.connect(readonly=True)
+            try:
+                cfg = export_config(c, p.get("secrets") != "0")
+            finally:
+                c.close()
+            name = time.strftime(f"fwlog-{host_name()}-config-backup-%Y%m%d.json")
+            self._send(200, json.dumps(cfg, indent=1, ensure_ascii=False), "application/json; charset=utf-8",
+                       {"Content-Disposition": f'attachment; filename="{name}"'})
+        elif re.fullmatch(r"/api/backup/repos/(\d+)/files", u.path):
+            self._send(200, api_repo_files(int(u.path.split("/")[4])))
         elif u.path == "/agent/fwlog-agent.ps1":
             try:
                 with open(os.path.join(AGENT_DIR, "fwlog-agent.ps1"), "rb") as f:
@@ -1548,6 +3439,8 @@ class Web(BaseHTTPRequestHandler):
 
     def _post(self):
         path = urlparse(self.path).path
+        if path.startswith("/api/backup") or path.startswith("/api/restore") or path.startswith("/api/admin"):
+            return self._post_backup(path)
         if path == "/api/servers":
             return self._send(200, api_server_create(self._body_json()))
         m = re.fullmatch(r"/api/servers/(\d+)", path)
@@ -1581,8 +3474,40 @@ class Web(BaseHTTPRequestHandler):
             return self._send(404, {"error": "firewall non trovato"})
         self._send(200, {"ok": True})
 
+    def _post_backup(self, path):
+        if path == "/api/backup/config":
+            return self._send(200, api_config_import(self._body_json(1024 * 1024)))
+        d = self._body_json()
+        if path == "/api/admin/settings":
+            return self._send(200, api_admin_settings(d))
+        if path == "/api/backup/repos":
+            return self._send(200, api_repo_save(None, d))
+        if path == "/api/backup/repos/test":
+            return self._send(200, api_repo_test(d))
+        m = re.fullmatch(r"/api/backup/repos/(\d+)", path)
+        if m:
+            return self._send(200, api_repo_save(int(m.group(1)), d))
+        if path == "/api/backup/jobs":
+            return self._send(200, api_job_save(None, d))
+        m = re.fullmatch(r"/api/backup/jobs/(\d+)(/run)?", path)
+        if m:
+            if m.group(2):
+                return self._send(202, api_job_run(int(m.group(1))))
+            return self._send(200, api_job_save(int(m.group(1)), d))
+        if path == "/api/restore/prepare":
+            return self._send(202, api_restore_prepare(d))
+        if path == "/api/restore/run":
+            return self._send(202, api_restore_run(d))
+        self._send(404, {"error": "non trovato"})
+
     def _delete(self):
         u = urlparse(self.path)
+        m = re.fullmatch(r"/api/backup/(repos|jobs)/(\d+)", u.path)
+        if m:
+            fn = api_repo_delete if m.group(1) == "repos" else api_job_delete
+            return self._send(200, fn(int(m.group(2))))
+        if u.path == "/api/restore":
+            return self._send(200, api_restore_cancel())
         if u.path == "/api/logs":
             return self._send(202, api_logs_delete({k: v[-1] for k, v in parse_qs(u.query).items()}))
         m = re.fullmatch(r"/api/servers/(\d+)", u.path)
@@ -1731,6 +3656,11 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     store = Store()
     store.start()
+    try:
+        cleanup_backup_dirs()
+    except OSError:
+        log.warning("impossibile pulire i file temporanei di backup")
+    threading.Thread(target=bk.scheduler, name="backup-sched", daemon=True).start()
     if SYSLOG_UDP:
         threading.Thread(target=udp_loop, args=(udp_socket(),), name="udp", daemon=True).start()
     if SYSLOG_TCP:
@@ -1770,5 +3700,155 @@ def main():
         store.stop()
 
 
+# --------------------------------------------------------------------------
+# Ripristino da riga di comando (macchina nuova, servizio fermo)
+# --------------------------------------------------------------------------
+def db_in_use():
+    """True se un processo ha aperto il database (servizio ancora attivo)."""
+    target = os.path.realpath(DB_PATH)
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            for fd in os.listdir(f"/proc/{pid}/fd"):
+                if os.readlink(f"/proc/{pid}/fd/{fd}") in (target, target + "-wal"):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def cli_restore(argv):
+    import argparse
+    import getpass
+    ap = argparse.ArgumentParser(
+        prog="fwlog.py restore",
+        description="Ripristina un backup di fwlog (.fwbk) come database del servizio, con certificato TLS "
+                    "e fwlog.env se non presenti. Da eseguire come root a servizio fermo.")
+    ap.add_argument("file", help="file .fwbk")
+    ap.add_argument("--info", action="store_true", help="mostra solo il contenuto del backup")
+    ap.add_argument("--replace", action="store_true",
+                    help="sostituisce un database esistente con dati (il vecchio viene rinominato)")
+    ap.add_argument("--no-etc", action="store_true", help="non ripristina certificato TLS e fwlog.env")
+    ap.add_argument("--yes", action="store_true", help="non chiede conferma")
+    a = ap.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    def fail(msg):
+        print("ERRORE: " + msg, file=sys.stderr)
+        return 1
+    if not os.path.isfile(a.file):
+        return fail(f"file non trovato: {a.file}")
+    if not a.info:
+        if os.geteuid() != 0:
+            return fail("eseguire come root (sudo)")
+        if db_in_use():
+            return fail(f"{DB_PATH} e' in uso: fermare il servizio con  systemctl stop fwlog")
+    if not os.path.isdir(DATA_DIR):
+        return fail(f"{DATA_DIR} non esiste: montare il disco dati o eseguire install.sh")
+    try:
+        password = None
+        if is_encrypted(a.file):
+            password = os.environ.get("FWLOG_RESTORE_PASSWORD") or getpass.getpass("Password del backup: ")
+        tmp = DB_PATH + ".restore"
+        need_space(os.path.getsize(a.file) * 6, "decomprimere il backup")
+        print("Decompressione...")
+        meta = unpack(a.file, tmp, password, guard=False)
+    except BackupError as e:
+        return fail(str(e))
+    labels = {"admin": "accessi amministratori", "server": "log dei server", "firewall": "log dei firewall",
+              "config": "configurazione backup"}
+    counts = meta.get("counts", {})
+    print(f"\nBackup del {_ms_iso(meta['created'])} da {meta.get('host')} (job: {meta.get('job')})")
+    print("Contenuto: " + ", ".join(labels.get(x, x) for x in meta.get("contents", [])))
+    for t, label in (("firewalls", "firewall"), ("logs", "log dei firewall"), ("servers", "server Windows"),
+                     ("events", "eventi dei server"), ("fw_admin", "accessi admin ai firewall"),
+                     ("backup_jobs", "job di backup"), ("backup_repos", "destinazioni di backup")):
+        if t in counts:
+            print(f"  {label}: {counts[t]}")
+    print("File di configurazione: " + (", ".join(meta.get("files") or []) or "nessuno"))
+    if a.info:
+        os.remove(tmp)
+        return 0
+
+    def has_data(path):
+        try:
+            c = sqlite3.connect(path)
+            try:
+                for t in ("logs", "events", "servers", "firewalls", "fw_admin"):
+                    try:
+                        if c.execute(f"SELECT 1 FROM {t} LIMIT 1").fetchone():
+                            return True
+                    except sqlite3.OperationalError:
+                        pass
+            finally:
+                c.close()
+        except sqlite3.DatabaseError:
+            return True
+        return False
+    exists = os.path.exists(DB_PATH)
+    if exists and has_data(DB_PATH) and not a.replace:
+        os.remove(tmp)
+        return fail(f"{DB_PATH} contiene gia' dei dati: rieseguire con --replace (il database attuale "
+                    "viene conservato con un altro nome)")
+    if not a.yes:
+        q = "\nIl database attuale verra' rinominato e sostituito. " if exists else "\n"
+        if input(q + "Procedere con il ripristino? [s/N] ").strip().lower() not in ("s", "si", "y", "yes"):
+            os.remove(tmp)
+            print("Annullato.")
+            return 1
+    c = sqlite3.connect(tmp)
+    try:
+        files = dict(c.execute("SELECT name, data FROM _files").fetchall()) if "_files" in meta["tables"] else {}
+        c.execute("DROP TABLE IF EXISTS _files")
+        c.execute("DROP TABLE IF EXISTS _meta")
+        c.commit()
+        c.execute("PRAGMA journal_mode=WAL")
+    finally:
+        c.close()
+    if exists:
+        old = DB_PATH + time.strftime(".prima-del-ripristino-%Y%m%d-%H%M%S")
+        for sfx in ("", "-wal", "-shm"):
+            if os.path.exists(DB_PATH + sfx):
+                os.replace(DB_PATH + sfx, old + sfx)
+        print(f"Database precedente conservato in {old}")
+    for sfx in ("-wal", "-shm"):
+        if os.path.exists(tmp + sfx):
+            os.replace(tmp + sfx, DB_PATH + sfx)
+    os.replace(tmp, DB_PATH)
+    try:
+        import grp
+        import pwd
+        uid, gid = pwd.getpwnam("fwlog").pw_uid, grp.getgrnam("fwlog").gr_gid
+        for sfx in ("", "-wal", "-shm"):
+            if os.path.exists(DB_PATH + sfx):
+                os.chown(DB_PATH + sfx, uid, gid)
+                os.chmod(DB_PATH + sfx, 0o640)
+    except KeyError:
+        uid = gid = None
+        print("ATTENZIONE: utente fwlog inesistente, sistemare i permessi del database")
+    print(f"Database ripristinato in {DB_PATH}")
+    if a.no_etc or not files:
+        return 0
+    os.makedirs(ETC_DIR, exist_ok=True)
+    for name, data in sorted(files.items()):
+        dst = os.path.join(ETC_DIR, name)
+        if os.path.exists(dst):
+            with open(dst, "rb") as f:
+                same = f.read() == data
+            if same:
+                continue
+            dst += ".dal-backup"
+            print(f"{os.path.join(ETC_DIR, name)} esiste gia': la versione del backup e' in {dst}")
+        else:
+            print(f"Ripristinato {dst}")
+        with open(dst, "wb") as f:
+            f.write(data)
+        os.chmod(dst, 0o644 if name.endswith(".crt") else 0o640)
+        if gid is not None:
+            os.chown(dst, 0, gid)
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "restore":
+        sys.exit(cli_restore(sys.argv[2:]))
     main()
