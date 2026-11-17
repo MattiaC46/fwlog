@@ -127,8 +127,8 @@ sudo ALLOWED_SOURCES=192.168.1.1,192.168.1.254,10.0.10.0/24 ./install.sh
 
 Si possono impostare anche dopo, con `FWLOG_ALLOWED_SOURCES` (sezione 8).
 
-Il repository è privato: per clonarlo sulla VM serve un accesso GitHub (es. `gh auth login`
-oppure un token), in alternativa copia la cartella con `scp`.
+Il repository è pubblico: `git clone` funziona senza account GitHub né credenziali.
+Per installare una versione precisa: `git clone --branch <tag> https://github.com/MattiaC46/fwlog.git`.
 
 Lo script:
 
@@ -825,3 +825,12 @@ python3 test-sender.py 127.0.0.1 -p 5514
   Con NLA attivo i tentativi RDP falliti risultano accessi di tipo «Rete».
 - Pensato per piccole e medie aziende, fino a qualche migliaio di messaggi al secondo.
   Oltre conviene una soluzione come Graylog o basata su ClickHouse.
+
+## Licenza
+
+fwlog è software libero, distribuito con la licenza **GNU General Public License versione 3**
+(GPL-3.0): puoi usarlo, studiarlo, modificarlo e ridistribuirlo, anche a scopo commerciale.
+Chi distribuisce fwlog o una sua versione modificata deve farlo con la stessa licenza e
+fornire il codice sorgente. Il testo completo è nel file [LICENSE](LICENSE).
+
+fwlog è fornito «così com'è», senza alcuna garanzia (sezioni 15 e 16 della licenza).
