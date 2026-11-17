@@ -108,10 +108,14 @@ e in `/etc/fstab` usare `0 2` come ultime due colonne (il `1` è riservato al di
 Su Ubuntu 24.04 o successivo (testato su 26.04), con il disco dati già montato:
 
 ```bash
-git clone https://github.com/MattiaC46/fwlog.git
+git clone --branch v1.0 https://github.com/MattiaC46/fwlog.git
 cd fwlog
 sudo ./install.sh
 ```
+
+Il repository è pubblico: il clone non richiede account GitHub né credenziali.
+`--branch v1.0` scarica la versione stabile indicata; senza, ottieni l'ultima versione in
+sviluppo (`main`), non sempre già provata in produzione.
 
 La dashboard è sulla porta **10443**. Per usarne un'altra: `sudo WEB_PORT=11443 ./install.sh`
 (vale solo alla prima installazione; la variabile va scritta dopo `sudo`). Su Rocky Linux 9 segui
@@ -126,9 +130,6 @@ sudo ALLOWED_SOURCES=192.168.1.1,192.168.1.254,10.0.10.0/24 ./install.sh
 ```
 
 Si possono impostare anche dopo, con `FWLOG_ALLOWED_SOURCES` (sezione 8).
-
-Il repository è pubblico: `git clone` funziona senza account GitHub né credenziali.
-Per installare una versione precisa: `git clone --branch <tag> https://github.com/MattiaC46/fwlog.git`.
 
 Lo script:
 
@@ -150,8 +151,19 @@ sudo ufw allow from 192.168.1.0/24 to any port 514 proto tcp
 sudo ufw allow from 192.168.1.0/24 to any port 10443 proto tcp
 ```
 
-**Aggiornamento:** `git pull && sudo ./install.sh`. Configurazione, certificato e
-database non vengono toccati.
+**Aggiornamento** a una nuova versione (es. `v1.1`; l'elenco è nella pagina *Tags* del
+repository su GitHub, oppure con `git tag` dopo il `fetch`):
+
+```bash
+cd fwlog
+git fetch --tags
+git checkout v1.1
+sudo ./install.sh
+```
+
+Configurazione, certificato e database non vengono toccati. `git describe --tags` mostra
+la versione presente nella cartella. Con un clone fatto con `--branch` `git pull` non
+funziona (la cartella è ferma su una versione): usa sempre `fetch` e `checkout`.
 
 **VM template da clonare per più clienti:** prima della copia esegui
 `sudo ./prepara-template.sh`, poi da ogni cliente monta il disco dati ed esegui
